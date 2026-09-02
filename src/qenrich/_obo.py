@@ -3,6 +3,8 @@
 import re
 from functools import lru_cache
 
+from ._io import open_text
+
 import pandas as pd
 
 
@@ -28,7 +30,7 @@ class GeneOntology:
         meta: dict[str, tuple[str, str]] = {}
         alt: dict[str, str] = {}
         cur: dict[str, object] | None = None
-        with open(path, encoding="utf-8") as fh:
+        with open_text(path) as fh:
             for line in fh:
                 line = line.rstrip("\n")
                 if line == "[Term]":

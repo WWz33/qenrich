@@ -93,6 +93,10 @@ def read_genelist(
     if no_header:
         header = [f"set{i + 1}" for i in range(ncols)]
         data = rows
+    elif len(rows) == 1:
+        # single-row file: almost always a header with no genes yet
+        header = [c.strip() or f"set{i + 1}" for i, c in enumerate(rows[0])]
+        data = []
     elif _has_header(rows):
         header = [c.strip() or f"set{i + 1}" for i, c in enumerate(rows[0])]
         data = rows[1:]

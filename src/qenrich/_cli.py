@@ -165,13 +165,22 @@ def cmd_enrich(args) -> int:
 
     results, es_wide, stats = {}, pd.DataFrame(), {}
     results_gsea, nes_wide, stats_gsea = {}, pd.DataFrame(), {}
+    bg = None
+    if args.bg:
+        bg = _read_bg(args.bg)
+        if args.strip_suffix:
+            import re as _re
+            bg = [_re.sub(r"\.\d+$", "", g) for g in bg]
     if sets:
         results, es_wide, stats = run_ora(
-            net, sets, tmin=args.tmin, bg=_read_bg(args.bg) if args.bg else None, verbose=args.verbose
+            net, sets, tmin=args.tmin, bg=bg, verbose=args.verbose
         )
-        if args.drop_parents and go:
-            results = drop_parents(results, go, thr=args.padj)
-            print(f"[qenrich] dropped parent terms with significant children (padj<{args.padj})")
+        if args.drop_parents:
+            if go:
+                results = drop_parents(results, go, thr=args.padj)
+                print(f"[qenrich] dropped parent terms with significant children (padj<{args.padj})")
+            else:
+                print("[qenrich] warning: --drop-parents needs --obo, ignoring", file=sys.stderr)
         report(results, stats, "enrichment", "log_or")
     if numeric:
         results_gsea, nes_wide, stats_gsea = run_gsea(net, numeric, tmin=args.tmin, verbose=args.verbose)

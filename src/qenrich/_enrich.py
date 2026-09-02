@@ -80,6 +80,7 @@ def strip_suffix(sets: dict[str, list[str]], numeric: dict[str, dict[str, float]
     numeric = {k: {re.sub(r"\.\d+$", "", g): w for g, w in v.items()} for k, v in numeric.items()}
     net = net.copy()
     net["target"] = net["target"].astype(str).str.replace(r"\.\d+$", "", regex=True)
+    net = net.drop_duplicates(subset=["source", "target"]).reset_index(drop=True)
     return sets, numeric, net
 
 
@@ -147,12 +148,20 @@ def run_gsea(
             # all-zero weights crash decoupler's running sum (division by zero)
             results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio"])
             continue
+        if len(genes) < tmin:
+            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio"])
+            continue
         row = pd.DataFrame(
             [[vec[g] for g in genes]],
             index=[name],
             columns=genes,
         )
-        es, pv = dc.mt.gsea(row, net, tmin=tmin, empty=False, verbose=verbose)
+        try:
+            es, pv = dc.mt.gsea(row, net, tmin=tmin, empty=False, verbose=verbose)
+        except AssertionError as e:  # no term shares >= tmin targets with this row
+            print(f"[qenrich] warning: GSEA set '{name}' skipped ({e})", file=sys.stderr)
+            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio"])
+            continue
         recs = []
         for t in es.columns:
             count, edge = _leading_edge({g: vec[g] for g in genes}, term_targets[t])

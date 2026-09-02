@@ -281,7 +281,9 @@ def parse_generic(path: str) -> dict[str, pd.DataFrame]:
         return [t for c in cells for t in _split_ids(c)]
 
     first_vals = idlike(rows_raw[0][1:ncols])
-    data = rows_raw if (not first_vals or len(rows_raw) < 2) else rows_raw[1:]
+    # row 0 carrying ID-like values means there is no header; dropping it here
+    # silently lost the first gene of header-less files
+    data = rows_raw[1:] if (not first_vals and len(rows_raw) >= 2) else rows_raw
     objects: dict[str, list[tuple[str, str]]] = {n: [] for n, _ in _PATTERNS}
     for r in data:
         r = r + [""] * (ncols - len(r))

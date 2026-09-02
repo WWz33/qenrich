@@ -548,3 +548,52 @@ def test_read_names_bom(tmp_path):
     p.write_bytes("\ufeffGO:1\tstress\t应激\n".encode("utf-8"))
     df = read_names(str(p))
     assert df.iloc[0, 0] == "GO:1"  # BOM stripped, id intact
+
+
+# ---- round 5: parse_generic keeps first row of header-less files ----
+def test_generic_headerless_first_row_kept(tmp_path):
+    text = "G1\tGO:0000001\nG2\tGO:0000002\n"
+    objs = PARSERS["generic"](wfile(tmp_path, "nh.txt", text))
+    assert set(objs["go"]["target"]) == {"G1", "G2"}  # G1 was previously dropped
+
+
+# ---- round 5: single-row gene list is a header-only file ----
+def test_genelist_single_row_header(tmp_path):
+    _, sets, _ = read_genelist(wfile(tmp_path, "one.txt", "DE_up\tDE_down\n"))
+    assert set(sets) == {"DE_up", "DE_down"} and sets["DE_up"] == []
+
+
+# ---- round 5: strip_suffix dedups versioned net rows ----
+def test_strip_suffix_net_dedup(tmp_path):
+    from qenrich._enrich import strip_suffix
+    net = pd.DataFrame({"source": ["GO:1", "GO:1"], "target": ["Gene01.1", "Gene01.2"]})
+    _, _, net2 = strip_suffix({}, {}, net)
+    assert not net2.duplicated(subset=["source", "target"]).any()
+    assert set(net2["target"]) == {"Gene01"}
+
+
+# ---- round 5: run_gsea survives fewer genes than tmin ----
+def test_gsea_below_tmin_no_crash(tmp_path):
+    from qenrich._enrich import run_gsea
+    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
+    results, _, stats = run_gsea(net, {"tiny": {"Gene01": 2.0}}, tmin=5)
+    assert results["tiny"].empty  # skipped, not crashed
+
+
+# ---- round 5: iprscan versioned pfam accessions ----
+def test_iprscan_versioned_pfam(tmp_path):
+    text = ("G1\t0123456789abcdef0123456789abcdef\t150\tPfam\tPF00001.20\tKinase\t1\t100\t"
+            "1e-5\tT\t20240101\tIPR000001\tDomain\tGO:0000001\t-\n")
+    objs = PARSERS["iprscan"](wfile(tmp_path, "v.tsv", text))
+    assert set(objs["pfam"]["source"]) == {"PF00001"}  # version stripped
+
+
+# ---- round 5: gzipped OBO readable ----
+def test_obo_gzipped(tmp_path):
+    import gzip as gz
+    from qenrich._obo import GeneOntology
+    p = tmp_path / "t.obo.gz"
+    with gz.open(p, "wt") as f:
+        f.write(OBO)
+    go = GeneOntology.from_obo(str(p))
+    assert go.name("GO:0000001") == "parent process"
