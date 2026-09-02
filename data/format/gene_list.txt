@@ -1,0 +1,118 @@
+salt_stress_up	control_down
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G000100.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G000300.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G000500.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G000600.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G000800.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G000900.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001000.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001000.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001100.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001200.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001300.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001300.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001300.3	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001300.4	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001500.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001500.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001600.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001600.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001600.3	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001600.4	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G001900.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002000.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002000.3	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002000.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002000.4	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002100.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002100.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002100.3	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002200.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002200.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002200.3	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002200.4	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002200.5	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002200.6	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002300.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002300.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002400.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002500.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002500.3	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002500.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002500.4	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002500.5	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002500.6	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002600.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002800.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G002900.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003000.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003000.2	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003000.3	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003100.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003200.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003300.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003400.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003500.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003600.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003700.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003800.1	
+glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003800.2	
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G003900.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004000.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004100.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004200.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004300.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004400.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004400.2
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004500.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004600.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004700.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004700.2
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004700.3
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004700.4
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004700.5
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004800.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004800.2
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G004900.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005000.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005000.2
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005000.3
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005100.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005200.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005300.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005300.3
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005300.2
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005300.4
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005300.5
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005300.6
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005300.7
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005300.8
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005300.9
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005400.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005500.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005500.2
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005600.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005700.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005800.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005800.2
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G005900.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006000.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.2
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.3
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.4
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.5
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.6
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.7
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.8
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.10
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.9
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.11
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.12
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006100.13
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006200.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006200.2
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006300.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006400.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006500.1
+	glyma.Wm82_NJAU.gnm1.ann1.GmW82.01G006600.1

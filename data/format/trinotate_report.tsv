@@ -1,0 +1,4 @@
+#gene_id	transcript_id	sprot_Top_BLASTX_hit	PFAM	gene_ontology_blast	gene_ontology_pfam
+Glyma.01G000100	Glyma.01G000100.t1	-	PF00069	GO:0004674^molecular_function^protein kinase activity	GO:0004674^molecular_function^protein kinase activity,GO:0005524^molecular_function^ATP binding
+Glyma.01G000200	Glyma.01G000200.t1	-	PF01433	GO:0004177^molecular_function^aminopeptidase activity	-
+Glyma.01G000600	Glyma.01G000600.t1	-	PF00262	GO:0005319^molecular_function^lipid transporter activity	GO:0005319^molecular_function^lipid transporter activity

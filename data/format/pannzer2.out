@@ -1,0 +1,5 @@
+qpid	rank	go_id	annotation	reliability
+Glyma.01G000100	1	GO:0004674	protein kinase activity	0.93
+Glyma.01G000100	2	GO:0005524	ATP binding	0.88
+Glyma.01G000200	1	GO:0004177	aminopeptidase activity	0.81
+Glyma.01G000300	1	GO:0008194	UDP-glycosyltransferase activity	0.77

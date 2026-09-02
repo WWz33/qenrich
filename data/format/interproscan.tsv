@@ -1,0 +1,4 @@
+Glyma.01G000100	5a3f8c1e6d2b4a7f9e0c1d2b3a4f5e6d	720	Pfam	PF00069	Protein kinase domain	1	289	3.1E-25	T	2026-08-01	IPR000719	Protein kinase domain	GO:0004674,GO:0005524	-
+Glyma.01G000200	6b4f9d2e7c3a5b8f0e1d2c3b4a5f6e7d	905	Pfam	PF01433	Peptidase family M1	12	480	1.2E-18	T	2026-08-01	IPR001966	Peptidase M1	GO:0004177	-
+Glyma.01G000300	7c5f0e3f8d4b6c9f1e2d3c4b5a6f7e8f	530	Pfam	PF00201	UDP-glucuronosyltransferase	28	516	4.5E-12	T	2026-08-01	IPR002213	UDP-glucuronosyl/UDP-glucosyltransferase	GO:0008194	-
+Glyma.01G000500	8d6f1f4a9e5c7d0f2e3d4c5b6a7f8e9f	410	Pfam	PF00249	Myb-like DNA-binding domain	55	120	8.8E-09	T	2026-08-01	IPR014778	Myb-like domain	GO:0003700	-

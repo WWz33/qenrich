@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+*.qenrich/
+qenrich_db/
+qenrich_results/
+.codegraph/
