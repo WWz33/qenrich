@@ -39,11 +39,12 @@ def _resolve_input(args) -> tuple[str, dict[str, pd.DataFrame]]:
         for k, v in objects.items():
             print(f"[qenrich] object '{k}': {v['source'].nunique()} terms, {v['target'].nunique()} genes")
         return ("go" if "go" in objects else next(iter(objects))), objects
-    obj_file = Path(args.db) / f"{inp}.tsv"
+    obj_file = Path(args.db) / f"{Path(inp).stem}.tsv"
     if obj_file.is_file():
         print(f"[qenrich] object file: {obj_file}")
         return "net", PARSERS["net"](obj_file)
-    raise FileNotFoundError(f"-i must be an existing file or an object name in --db (looked for {obj_file})")
+    raise FileNotFoundError(
+        f"-i must be an existing file or an object name in --db (looked for {obj_file})")
 
 
 def _read_bg(path: str) -> list[str]:

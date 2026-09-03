@@ -1,12 +1,27 @@
 """Bridge gene sets to decoupler's ORA (Fisher exact + BH FDR) and GSEA."""
 
 import re
+import sys
 
 import numpy as np
 import pandas as pd
 import scipy.stats as sts
 
 import decoupler as dc
+
+
+def _bh(p: np.ndarray) -> np.ndarray:
+    """Benjamini-Hochberg adjusted p-values (same as decoupler's per-row FDR)."""
+    p = np.asarray(p, dtype=float)
+    m = p.size
+    if m == 0:
+        return p
+    order = np.argsort(p, kind="stable")
+    ranked = p[order] * m / np.arange(1, m + 1)
+    ranked = np.minimum.accumulate(ranked[::-1])[::-1]
+    out = np.empty(m)
+    out[order] = np.clip(ranked, 0, 1)
+    return out
 
 
 def run_ora(
@@ -16,11 +31,11 @@ def run_ora(
     bg: list[str] | None = None,
     verbose: bool = False,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, dict[str, dict]]:
-    """Enrich every gene set against a net via ``dc.mt.ora``.
+    """Enrich every gene set against the net (Fisher exact + BH FDR).
 
-    Each set becomes one row of a binary matrix over the universe (all net
-    targets), ``n_up=len(set)`` recovers exactly the member genes, and the
-    feature-specific background makes the Fisher table use the whole universe.
+    Computed locally with the same formulas as decoupler's ``mt.ora``: the
+    released decoupler <=2.2.0 selects the wrong top-``n_up`` features for the
+    2x2 table, so its es/padj are only trustworthy in the unreleased fix.
 
     Returns
     -------
@@ -42,34 +57,30 @@ def run_ora(
     stats: dict[str, dict] = {}
     es_rows: dict[str, pd.Series] = {}
     for name, genes in sets.items():
-        gs = sorted(set(genes) & set(universe))
+        gs_set = set(genes) & set(universe)
         n_input = len(set(genes))
-        if not gs:
+        if not gs_set:
             results[name] = pd.DataFrame(columns=["term", "term_size", "overlap", "genes", "pvalue", "log_or", "padj"])
             stats[name] = {"n_input": n_input, "n_hit": 0, "n_terms": 0, "n_pruned": len(term_targets)}
             continue
-        row = pd.DataFrame(
-            np.isin(universe, gs).astype(float).reshape(1, -1),
-            index=[name],
-            columns=universe,
-        )
-        es, pv = dc.mt.ora(row, net, n_up=len(gs), n_bm=0, n_bg=None, tmin=tmin, empty=False, verbose=verbose)
-        terms = es.columns
-        n, big_n = len(gs), len(universe)
+        n, big_n = len(gs_set), len(universe)
+        tested = {t: tg for t, tg in term_targets.items() if len(tg) >= tmin}
         recs = []
-        for t in terms:
-            tg = term_targets[t]
-            k = len(tg & set(gs))
-            genes_hit = ";".join(sorted(tg & set(gs)))
-            # two-sided Fisher raw p, consistent with decoupler's BH-adjusted padj
-            tab = [[k, n - k], [len(tg) - k, big_n - len(tg) - n + k]]
-            pval = sts.fisher_exact(tab, alternative="two-sided")[1]
-            recs.append((t, len(tg), k, genes_hit, pval, float(es.loc[name, t]), float(pv.loc[name, t])))
-        df = pd.DataFrame(recs, columns=["term", "term_size", "overlap", "genes", "pvalue", "log_or", "padj"])
+        for t, tg in sorted(tested.items()):
+            k = len(tg & gs_set)
+            # same table as decoupler's _runora: a=k, b=term-only, c=set-only, d=neither
+            a, b = k, len(tg) - k
+            c, d = n - k, big_n - len(tg) - n + k
+            pval = sts.fisher_exact([[a, b], [c, d]], alternative="two-sided")[1]
+            lor = np.log((a + 0.5) * (d + 0.5) / ((b + 0.5) * (c + 0.5)))  # Haldane-Anscombe
+            recs.append((t, len(tg), k, ";".join(sorted(tg & gs_set)), pval, float(lor)))
+        df = pd.DataFrame(recs, columns=["term", "term_size", "overlap", "genes", "pvalue", "log_or"])
+        df["padj"] = _bh(df["pvalue"].values)
         df = df.sort_values("padj").reset_index(drop=True)
         results[name] = df
-        es_rows[name] = es.loc[name]
-        stats[name] = {"n_input": n_input, "n_hit": len(gs), "n_terms": len(terms), "n_pruned": len(term_targets) - len(terms)}
+        es_rows[name] = df.set_index("term")["log_or"].reindex(sorted(tested))
+        stats[name] = {"n_input": n_input, "n_hit": len(gs_set), "n_terms": len(tested),
+                       "n_pruned": len(term_targets) - len(tested)}
     es_wide = pd.DataFrame(es_rows).T.reindex(columns=sorted({t for df in results.values() for t in df["term"]}))
     return results, es_wide, stats
 
@@ -150,6 +161,7 @@ def run_gsea(
             continue
         if len(genes) < tmin:
             results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio"])
+            stats[name]["n_pruned"] = len(term_targets)
             continue
         row = pd.DataFrame(
             [[vec[g] for g in genes]],

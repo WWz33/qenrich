@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import scipy.stats as sts
 from pathlib import Path
@@ -161,9 +162,9 @@ def test_ora_matches_fisher_exact(tmp_path):
     row = up[up["term"] == "GO:0000003"].iloc[0]  # overlap with up={G1,G2,G3} is {G1}
     assert row["overlap"] == 1 and row["term_size"] == 3
     assert row["genes"] == "Gene01"
-    # pvalue = one-sided hypergeom enrichment
+    # pvalue = two-sided Fisher exact on [[k, term-k], [n-k, neither]]
     assert abs(row["pvalue"] - sts.fisher_exact([[1, 2], [2, 1]])[1]) < 1e-12
-    # padj = BH over decoupler's two-sided Fisher p-values
+    # padj = BH over the same two-sided Fisher p-values
     fisher = [
         sts.fisher_exact([[3, 0], [0, 3]])[1],  # GO:0000001, k=3
         sts.fisher_exact([[2, 1], [1, 2]])[1],  # GO:0000002, k=2
@@ -171,7 +172,10 @@ def test_ora_matches_fisher_exact(tmp_path):
     ]
     for term, expect in zip(["GO:0000001", "GO:0000002", "GO:0000003"], _bh(fisher), strict=True):
         got = up[up["term"] == term].iloc[0]["padj"]
-        assert abs(got - expect) < 1e-6, (term, got, expect)  # numba BH has ~1e-8 float noise
+        assert abs(got - expect) < 1e-6, (term, got, expect)
+    # log_or = Haldane-Anscombe corrected log odds ratio
+    lor = np.log((1 + 0.5) * (1 + 0.5) / ((2 + 0.5) * (2 + 0.5)))
+    assert abs(row["log_or"] - lor) < 1e-9
     assert up[up["term"] == "GO:0000001"].iloc[0]["log_or"] > 0  # enriched
     assert set(es_wide.columns) == {"GO:0000001", "GO:0000002", "GO:0000003"}
 
@@ -186,9 +190,9 @@ def test_ora_bg_and_tmin(tmp_path):
     sizes = results["s"].set_index("term")["term_size"].to_dict()
     assert sizes["GO:0000001"] == 3 and sizes["GO:0000002"] == 3
     assert "GO:0000003" not in sizes  # only Gene01 left in bg -> below tmin=3
-    # tmin prunes every term -> decoupler raises
-    with pytest.raises(AssertionError, match="tmin"):
-        run_ora(net, {"s": ["Gene01"]}, tmin=10)
+    # tmin prunes every term -> empty result table, not a crash
+    empty, _, st = run_ora(net, {"s": ["Gene01"]}, tmin=10)
+    assert empty["s"].empty and st["s"]["n_pruned"] == 3
 
 
 # ------------------------------------------------------- new v0.2 features ----
@@ -597,3 +601,93 @@ def test_obo_gzipped(tmp_path):
         f.write(OBO)
     go = GeneOntology.from_obo(str(p))
     assert go.name("GO:0000001") == "parent process"
+
+
+# ---- round 6: ragged rows must not shift pandas columns (index_col=False) ----
+def test_eggnog_trailing_tab_no_column_shift(tmp_path):
+    base = "#query\tGOs\nG1\tGO:0000001\t \nG2\tGO:0000002\t \n"
+    objs = PARSERS["eggnog"](wfile(tmp_path, "tt.tsv", base))
+    assert set(objs["go"]["target"]) == {"G1", "G2"}
+    assert set(objs["go"]["source"]) == {"GO:0000001", "GO:0000002"}
+
+
+def test_trinotate_trailing_tab_keeps_gene_ids(tmp_path):
+    text = ("#gene_id\ttranscript_id\tgene_ontology_blast\n"
+            "G1\tG1.t1\tGO:0004674^F\t \nG2\tG2.t1\tGO:0004177^F\t \n")
+    objs = PARSERS["trinotate"](wfile(tmp_path, "tt.tsv", text))
+    assert set(objs["go"]["target"]) == {"G1", "G2"}  # gene ids, not transcript ids
+
+
+# ---- round 6: gff3 trailing tab+space must not drop the row ----
+def test_gff3_trailing_tab_space(tmp_path):
+    text = ("##gff-version 3\n"
+            "chr1\tg\tgene\t1\t100\t.\t+\t.\tID=gene:G1;Ontology_term=GO:0000001\t \n")
+    objs = PARSERS["gff3"](wfile(tmp_path, "ts.gff3", text))
+    assert set(objs["go"]["target"]) == {"G1"}
+
+
+# ---- round 6: pipe-separated identifiers everywhere ----
+def test_gaf_pipe_separated_go(tmp_path):
+    text = ("!gaf-version: 2.2\n"
+            + "\t".join(["UniProtKB", "P12345", "P12345", "", "GO:0004674|GO:0005524",
+                         "F:", "UniProtKB", "", "", "P", "20240101", "UniProtKB", "", "", ""]) + "\n")
+    objs = PARSERS["gaf"](wfile(tmp_path, "p.gaf", text))
+    assert set(objs["go"]["source"]) == {"GO:0004674", "GO:0005524"}
+
+
+def test_generic_pipe_separated_ids(tmp_path):
+    objs = PARSERS["generic"](wfile(tmp_path, "p.txt", "G1\tGO:0004177|GO:0004674\n"))
+    assert set(objs["go"]["source"]) == {"GO:0004177", "GO:0004674"}
+
+
+def test_trinotate_pipe_in_go_cell(tmp_path):
+    text = "#gene_id\tgene_ontology_pfam\nG1\tGO:0000001|GO:0000002\n"
+    objs = PARSERS["trinotate"](wfile(tmp_path, "p.tsv", text))
+    assert set(objs["go"]["source"]) == {"GO:0000001", "GO:0000002"}
+
+
+def test_kofam_pipe_joined_kos(tmp_path):
+    objs = PARSERS["kofam"](wfile(tmp_path, "p.out", "G1\tK00001|K00002\nG2\tK00003\n"))
+    assert set(objs["kegg"]["source"]) == {"K00001", "K00002", "K00003"}
+
+
+def test_eggnog_uppercase_header(tmp_path):
+    text = "#QUERY\tGOS\nG1\tGO:0000001\nG2\t-\n"
+    objs = PARSERS["eggnog"](wfile(tmp_path, "u.tsv", text))
+    assert set(objs["go"]["target"]) == {"G1"}
+
+
+# ---- round 6: b2g .annot extra description column tolerated ----
+def test_b2g_annot_fifth_column(tmp_path):
+    text = "G1\tGO:0004674;GO:0005524\tInterPro\tIPR000719\tprotein kinase\nG2\tGO:0004177\tInterPro\tIPR001966\n"
+    objs = PARSERS["b2g_annot"](wfile(tmp_path, "d.annot", text))
+    assert set(objs["go"]["source"]) == {"GO:0004674", "GO:0005524", "GO:0004177"}
+    assert set(objs["interpro"]["source"]) == {"IPR000719", "IPR001966"}
+    assert "pfam" not in objs  # free-text 'PF00069' in col 5 must not fabricate pairs
+
+
+# ---- round 6: ORA decoupler-free statistics ----
+def test_ora_set_equals_universe(tmp_path):
+    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
+    universe = sorted(set(net["target"]))
+    results, _, _ = run_ora(net, {"all": universe}, tmin=3)
+    assert not results["all"].empty  # previously crashed in decoupler's _runora
+
+
+def test_ora_pvalue_padj_consistent(tmp_path):
+    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
+    _, sets, _ = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
+    up = run_ora(net, sets, tmin=3)[0]["up"]
+    sig = up[up["pvalue"] < 0.05]
+    assert (sig["padj"] >= sig["pvalue"]).all()  # BH never shrinks p-values
+    assert (up["padj"] <= 1.0).all() and (up["padj"] > 0).all()
+
+
+def test_gsea_skip_path_no_nameerror(tmp_path):
+    from qenrich._enrich import run_gsea
+    # each term shares only 2 targets with the row -> below tmin=5 -> skip cleanly
+    net = pd.DataFrame([(t, g) for t, gs in {"T1": [f"G{i}" for i in range(5)],
+                                             "T2": [f"G{i}" for i in range(5, 10)]}
+                        .items() for g in gs], columns=["source", "target"])
+    results, _, stats = run_gsea(net, {"r": {g: 1.0 for g in ["G0", "G1", "G5", "G6"]}}, tmin=5)
+    assert results["r"].empty and stats["r"]["n_input"] == 4

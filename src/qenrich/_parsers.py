@@ -6,6 +6,7 @@ format provides a meaningful one (none does for v1).
 """
 
 import re
+import warnings
 
 import pandas as pd
 
@@ -15,13 +16,21 @@ from ._sniff import GO_RE, IPR_RE, KO_RE, PFAM_RE
 _SKIP = {"", "-", "NA", "N/A", "None"}
 
 
+def _read_tsv(path: str, **kw) -> pd.DataFrame:
+    """Read a TSV; ragged rows are truncated, not turned into an index column
+    (pandas' default would silently shift every column by one)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", pd.errors.ParserWarning)
+        return pd.read_csv(path, sep="\t", index_col=False, **kw)
+
+
 def _pairs(rows: list[tuple[str, str]]) -> pd.DataFrame:
     df = pd.DataFrame(sorted(set(rows)), columns=["source", "target"])
     return df[~df["source"].isin(_SKIP) & ~df["target"].isin(_SKIP)]
 
 
 def _split_ids(s: str) -> list[str]:
-    return [t for t in re.split(r"[,;\s]+", str(s).strip()) if t and t not in _SKIP]
+    return [t for t in re.split(r"[|,;\s]+", str(s).strip()) if t and t not in _SKIP]
 
 
 def _net(df: pd.DataFrame, source: str, target: str) -> pd.DataFrame:
@@ -57,9 +66,11 @@ _COG = {
 
 
 def parse_eggnog(path: str, annot_lvl: str | int | None = None) -> dict[str, pd.DataFrame]:
-    h = _header_index(path, lambda l: l.startswith("#query") or l.startswith("query\t"))
-    df = pd.read_csv(path, sep="\t", skiprows=h, dtype=str, keep_default_na=False)
-    df.columns = [c.lstrip("#").strip() for c in df.columns]
+    h = _header_index(path, lambda l: l.lower().startswith("#query\t") or l.lower().startswith("query\t"))
+    # index_col=False: a trailing-tab row would otherwise make pandas eat 'query'
+    # as the index and silently shift every column by one
+    df = _read_tsv(path, skiprows=h, dtype=str, keep_default_na=False)
+    df.columns = [c.lstrip("#").strip().lower() for c in df.columns]  # header case varies
     lvl_col = next((c for c in ("max_annot_lvl", "tax_ceiling") if c in df.columns), None)
     if annot_lvl is not None and lvl_col:
         # emapper>=2.1.13 stores "NNN|Taxon"; match the taxid before the separator
@@ -78,22 +89,22 @@ def parse_eggnog(path: str, annot_lvl: str | int | None = None) -> dict[str, pd.
         if rows:
             objects[_objname(col)] = _pairs(rows)
 
-    explode("GOs", lambda v: GO_RE.findall(v))
-    explode("KEGG_ko", lambda v: [t for t in re.findall(r"K\d{5}", v)])
-    explode("KEGG_Pathway", lambda v: _split_ids(v))
-    # PFAMs holds domain *names* ("Profilin") and sometimes PF accessions; keep both
-    explode("PFAMs", lambda v: [re.sub(r"^(PF\d{5})\.\d+$", r"\1", t) for t in _split_ids(v)])
-    explode("COG_category", lambda v: [(f"{c} {_COG.get(c, '')}").strip() for c in str(v) if c in _COG])
+    explode("gos", lambda v: GO_RE.findall(v))
+    explode("kegg_ko", lambda v: [t for t in re.findall(r"K\d{5}", v)])
+    explode("kegg_pathway", lambda v: _split_ids(v))
+    # pfams holds domain *names* ("Profilin") and sometimes PF accessions; keep both
+    explode("pfams", lambda v: [re.sub(r"^(PF\d{5})\.\d+$", r"\1", t) for t in _split_ids(v)])
+    explode("cog_category", lambda v: [(f"{c} {_COG.get(c, '')}").strip() for c in str(v) if c in _COG])
     return objects
 
 
 def _objname(col: str) -> str:
-    return {"GOs": "go", "KEGG_ko": "kegg", "KEGG_Pathway": "pathway", "PFAMs": "pfam", "COG_category": "cog"}[col]
+    return {"gos": "go", "kegg_ko": "kegg", "kegg_pathway": "pathway", "pfams": "pfam", "cog_category": "cog"}[col]
 
 
 # ----------------------------------------------------------- InterProScan ----
 def parse_iprscan(path: str) -> dict[str, pd.DataFrame]:
-    df = pd.read_csv(path, sep="\t", header=None, dtype=str, keep_default_na=False)
+    df = _read_tsv(path, header=None, dtype=str, keep_default_na=False)
     ncols = df.shape[1]
     gene = df[0]
     objects: dict[str, pd.DataFrame] = {}
@@ -111,7 +122,7 @@ def parse_iprscan(path: str) -> dict[str, pd.DataFrame]:
         if rows:
             objects["go"] = _pairs(rows)
     if ncols >= 12:  # InterPro accession
-        rows = build(11, lambda v: IPR_RE.findall(v))
+        rows = build(11, lambda v: [t for t in v.split("|") if IPR_RE.fullmatch(t.strip())])
         if rows:
             objects["interpro"] = _pairs(rows)
     rows = build(4, lambda v: [re.sub(r"\.\d+$", "", t) for t in re.findall(r"PF\d{5}(?:\.\d+)?", v)], mask=df[3] == "Pfam")
@@ -125,11 +136,12 @@ def parse_b2g_annot(path: str) -> dict[str, pd.DataFrame]:
     go_rows, ipr_rows = [], []
     with open_text(path) as fh:
         for line in fh:
-            r = [c for c in line.rstrip("\r\n\t").split("\t")]
-            if len(r) != 4 or r[0].startswith("!"):
+            r = [c for c in line.rstrip("\r\n\t ").split("\t")]
+            if len(r) < 4 or r[0].startswith("!"):
                 continue
             go_rows += [(t, r[0]) for t in GO_RE.findall(r[1])]
-            ipr_rows += [(t, r[0]) for t in IPR_RE.findall(r[3])]
+            # column 4 is the InterPro accession; extra columns (descriptions) are ignored
+            ipr_rows += [(t, r[0]) for t in IPR_RE.findall(r[3].strip())]
     objects = {}
     if go_rows:
         objects["go"] = _pairs(go_rows)
@@ -139,7 +151,7 @@ def parse_b2g_annot(path: str) -> dict[str, pd.DataFrame]:
 
 
 def parse_b2g_tabular(path: str) -> dict[str, pd.DataFrame]:
-    df = pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False)
+    df = _read_tsv(path, dtype=str, keep_default_na=False)
     low = {c: c.strip().lower() for c in df.columns}
     gene_col = next((c for c, l in low.items() if l == "sequence name"), df.columns[0])
     go_col = next((c for c in df.columns if c != gene_col and df[c].astype(str).str.contains(GO_RE).any()), None)
@@ -151,7 +163,7 @@ def parse_b2g_tabular(path: str) -> dict[str, pd.DataFrame]:
 
 # --------------------------------------------------------------- PANNZER ----
 def parse_pannzer(path: str) -> dict[str, pd.DataFrame]:
-    df = pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False)
+    df = _read_tsv(path, dtype=str, keep_default_na=False)
     df.columns = [c.strip().lstrip("#").lower() for c in df.columns]
     gene_col = "qseqid" if "qseqid" in df.columns else "qpid"
     go_col = "go_id" if "go_id" in df.columns else next(
@@ -164,7 +176,7 @@ def parse_pannzer(path: str) -> dict[str, pd.DataFrame]:
 
 # ------------------------------------------------------------- Trinotate ----
 def parse_trinotate(path: str) -> dict[str, pd.DataFrame]:
-    df = pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False)
+    df = _read_tsv(path, dtype=str, keep_default_na=False)
     df.columns = [c.strip().lstrip("#").lower() for c in df.columns]
     gene_col = "gene_id" if "gene_id" in df.columns else df.columns[0]
     go_cols = [c for c in df.columns if "gene_ontology" in c]
@@ -173,10 +185,8 @@ def parse_trinotate(path: str) -> dict[str, pd.DataFrame]:
     rows = []
     for _, r in df.iterrows():
         for c in go_cols:
-            for part in str(r[c]).split(","):
-                m = GO_RE.search(part)
-                if m:
-                    rows.append((m.group(), str(r[gene_col])))
+            for m in GO_RE.finditer(str(r[c])):  # pipe- and comma-lists both allowed
+                rows.append((m.group(), str(r[gene_col])))
     return {"go": _pairs(rows)} if rows else {}
 
 
@@ -192,9 +202,7 @@ def parse_gaf(path: str) -> dict[str, pd.DataFrame]:
                 continue
             if r[3].startswith("NOT"):
                 continue
-            m = GO_RE.search(r[4])
-            if m:
-                rows.append((m.group(), r[1]))
+            rows += [(m, r[1]) for m in GO_RE.findall(r[4])]  # col 5 may be pipe-separated
     if not rows:
         raise ValueError(f"no usable annotations in GAF file: {path}")
     return {"go": _pairs(rows)}
@@ -217,7 +225,7 @@ def parse_gff3(path: str) -> dict[str, pd.DataFrame]:
         for line in fh:
             if line.startswith("#"):
                 continue
-            r = [c for c in line.rstrip("\r\n\t").split("\t")]
+            r = [c for c in line.rstrip("\r\n\t ").split("\t")]
             if len(r) != 9:
                 continue
             a = attrs(r[8])
@@ -263,7 +271,13 @@ def parse_kofam(path: str) -> dict[str, pd.DataFrame]:
             r = line.rstrip("\r\n").split("\t")
             if len(r) < 2 or r[1] == "-":
                 continue
-            rows.append((r[1].strip(), r[0].strip()))
+            ko = r[1].strip()
+            if KO_RE.fullmatch(ko):  # reject pipe-joined cells, validate one KO per row
+                rows.append((ko, r[0].strip()))
+            else:
+                for k in _split_ids(r[1]):  # tolerate separator-joined KOs
+                    if KO_RE.fullmatch(k):
+                        rows.append((k, r[0].strip()))
     if not rows:
         raise ValueError(f"no KO assignments in {path}")
     return {"kegg": _pairs(rows)}
@@ -300,7 +314,7 @@ def parse_generic(path: str) -> dict[str, pd.DataFrame]:
 
 # ------------------------------------------------------------------- net ----
 def parse_net(path: str) -> dict[str, pd.DataFrame]:
-    df = pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False)
+    df = _read_tsv(path, dtype=str, keep_default_na=False)
     df.columns = [c.strip().lower() for c in df.columns]
     if "source" not in df.columns or "target" not in df.columns:
         raise ValueError(f"net file must have 'source' and 'target' columns: {path}")

@@ -116,10 +116,10 @@ def _is_pannzer(rows: list[list[str]]) -> bool:
 
 def _is_b2g_annot(rows: list[list[str]]) -> bool:
     body = [r for r in rows if not r[0].startswith("!")]
-    four = [r for r in body if len(r) == 4]
-    if len(four) < max(2, len(body) // 2):
+    core = [r for r in body if len(r) >= 4]
+    if len(core) < max(2, len(body) // 2):
         return False
-    return all(r[2].lower() == "interpro" for r in four)
+    return all(r[2].lower() == "interpro" for r in core)
 
 
 def _is_kofam(rows: list[list[str]]) -> bool:

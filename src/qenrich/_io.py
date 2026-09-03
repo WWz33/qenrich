@@ -20,7 +20,7 @@ def read_names(path: str | Path) -> pd.DataFrame:
     For ``go_zh.tsv`` (``ID\\tEnglish\\tChinese``) the caller picks column 2 as
     the English name and column 3 as the Chinese name.
     """
-    return pd.read_csv(path, sep="\t", header=None, dtype=str, keep_default_na=False)
+    return pd.read_csv(path, sep="\t", header=None, dtype=str, keep_default_na=False, index_col=False)
 
 
 def cache_dir_for(annot_path: str | Path) -> Path:
@@ -41,7 +41,7 @@ def save_objects(objects: dict[str, pd.DataFrame], cdir: str | Path, source: str
 def load_objects(cdir: str | Path) -> dict[str, pd.DataFrame]:
     """Read back every ``*.tsv`` object in a cache/db directory."""
     cdir = Path(cdir)
-    objects = {p.stem: pd.read_csv(p, sep="\t", dtype=str, keep_default_na=False) for p in sorted(cdir.glob("*.tsv"))}
+    objects = {p.stem: pd.read_csv(p, sep="\t", dtype=str, keep_default_na=False, index_col=False) for p in sorted(cdir.glob("*.tsv"))}
     if not objects:
         raise FileNotFoundError(f"no .tsv objects in {cdir}")
     return objects
