@@ -105,12 +105,14 @@ def cmd_enrich(args) -> int:
 
     go = None
     if args.obo:
-        if feature != "go":
-            print("[qenrich] warning: --obo only applies to the 'go' feature, ignoring", file=sys.stderr)
-        else:
+        # applies whenever the active net holds GO ids, whatever the input route
+        # (annotation file, parsed object db, or net TSV)
+        if net["source"].astype(str).str.match(r"GO:\d{7}$").any():
             go = GeneOntology.from_obo(args.obo)
             net = go.propagate(net)
             print(f"[qenrich] propagated GO DAG: {net['source'].nunique()} terms, {net['target'].nunique()} genes")
+        else:
+            print("[qenrich] warning: --obo needs a go net, ignoring", file=sys.stderr)
 
     header, sets, numeric = read_genelist(args.genelist, no_header=args.no_header)
     sets, numeric = _select_columns(header, sets, numeric, getattr(args, "columns", None))
@@ -196,9 +198,9 @@ def cmd_enrich(args) -> int:
             label_map = {t: label_of(t) for t in net["source"].unique()}
         if args.style == "enrichplot":
             if sets:
-                plot_results_enrichplot(outdir, results, stats, label_map)
+                plot_results_enrichplot(outdir, results, stats, label_map, tag="ep")
             if numeric:
-                plot_results_enrichplot(outdir, results_gsea, stats_gsea, label_map)
+                plot_results_enrichplot(outdir, results_gsea, stats_gsea, label_map, tag="gsea_ep")
             plot_heatmap(pd.concat(summary), outdir, label_of)
         else:
             if sets:

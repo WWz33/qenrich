@@ -691,3 +691,62 @@ def test_gsea_skip_path_no_nameerror(tmp_path):
                         .items() for g in gs], columns=["source", "target"])
     results, _, stats = run_gsea(net, {"r": {g: 1.0 for g in ["G0", "G1", "G5", "G6"]}}, tmin=5)
     assert results["r"].empty and stats["r"]["n_input"] == 4
+
+
+# ---- round 7: set names with / must not break plot filenames ----
+def test_plot_slash_set_name(tmp_path):
+    from qenrich._plot import plot_results
+
+    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
+    results, es_wide, _ = run_ora(net, {"salt/control": ["Gene01", "Gene02", "Gene03"]}, tmin=3)
+    out = tmp_path / "o"
+    out.mkdir()
+    plot_results(out, results, es_wide, None)
+    assert (out / "salt_control_barplot.png").is_file()
+    assert (out / "salt_control_dotplot.png").is_file()
+
+
+def test_enrichplot_slash_set_name_and_tag(tmp_path):
+    from qenrich._plot_enrichplot import plot_results_enrichplot
+
+    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
+    results, _, stats = run_ora(net, {"a/b": ["Gene01", "Gene02", "Gene03"]}, tmin=3)
+    out = tmp_path / "ep"
+    out.mkdir()
+    plot_results_enrichplot(out, results, stats, None, top=3)
+    assert (out / "a_b_ep_dotplot.png").is_file()
+    assert (out / "ep_heatplot.png").is_file()  # default tag
+
+
+# ---- round 7: --obo works via the parse -> --db object route ----
+def test_cli_obo_via_object_db(tmp_path, capsys):
+    import subprocess, sys as _sys
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv", "#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\nG3\tGO:0000001\n"
+                                    "G4\tGO:0000003\nG5\tGO:0000003\nG6\tGO:0000003\n")
+    gl = wfile(tmp_path, "g.txt", "s\nG1\nG2\nG3\nG4\n")
+    db = tmp_path / "db"
+    rc = main(["parse", str(annot), "-o", str(db)])
+    assert rc == 0
+    rc = main(["-i", "go", "--genelist", str(gl), "--db", str(db),
+               "--obo", wfile(tmp_path, "t.obo", OBO), "--tmin", "1", "-o", str(tmp_path / "r")])
+    assert rc == 0
+    out = "\n".join(capsys.readouterr().out.splitlines())
+    assert "propagated GO DAG" in out  # was silently skipped before
+    res = (tmp_path / "r" / "s_enrichment.tsv").read_text()
+    assert "name" in res.splitlines()[0]  # obo term names filled
+
+
+# ---- round 7: ORA and GSEA heatplots coexist (no overwrite) ----
+def test_enrichplot_ora_gsea_heatplot_coexist(tmp_path):
+    from qenrich._plot_enrichplot import plot_results_enrichplot
+
+    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
+    results, _, stats = run_ora(net, {"up": ["Gene01", "Gene02", "Gene03"]}, tmin=3)
+    out = tmp_path / "ep"
+    out.mkdir()
+    plot_results_enrichplot(out, results, stats, None, top=3, tag="ep")
+    plot_results_enrichplot(out, results, stats, None, top=3, tag="gsea_ep")
+    assert (out / "ep_heatplot.png").is_file()
+    assert (out / "gsea_ep_heatplot.png").is_file()

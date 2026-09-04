@@ -169,6 +169,7 @@ def _heatplot(results_dfs: list[pd.DataFrame], path: Path, name_of, top_terms: i
             for g in [g for g in str(r["genes"]).split(";") if g]:
                 rows.append((r["term"], g))
     if not rows:
+        print(f"[qenrich] note: no gene memberships in the top terms, skipping {path.name}")
         return
     mat = pd.DataFrame(rows, columns=["term", "gene"]).drop_duplicates()
     terms = mat["term"].value_counts().head(top_terms).index
@@ -200,6 +201,7 @@ def plot_results_enrichplot(
     stats: dict[str, dict],
     label_map: dict | None,
     top: int = 10,
+    tag: str = "ep",
 ) -> None:
     """enrichplot-style per-set plots: GeneRatio dotplot, Count barplot, heatplot."""
     from ._plot import use_cjk_font
@@ -214,6 +216,8 @@ def plot_results_enrichplot(
     lab_len = max((d["Description"].str.len().max() for d in prepped.values() if len(d)), default=0)
     figsize = (max(5.5, 1.2 + 0.06 * lab_len), max(3.0, 0.28 * top + 1.0))
     for name, d in prepped.items():
-        _dotplot(d, outdir / f"{name}_ep_dotplot.png", name, figsize)
-        _barplot(d, outdir / f"{name}_ep_barplot.png", name, figsize)
-    _heatplot(list(results.values()), outdir / "ep_heatplot.png", name_of, top_terms=top)
+        fname = name.replace("/", "_")
+        _dotplot(d, outdir / f"{fname}_{tag}_dotplot.png", name, figsize)
+        _barplot(d, outdir / f"{fname}_{tag}_barplot.png", name, figsize)
+    # the tag keeps ORA and GSEA heatplots from overwriting each other
+    _heatplot(list(results.values()), outdir / f"{tag}_heatplot.png", name_of, top_terms=top)

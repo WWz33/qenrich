@@ -13,7 +13,10 @@ def plot_results(outdir: str | Path, results: dict, es_wide: pd.DataFrame, label
     matplotlib.use("Agg")
     import decoupler as dc
 
+    use_cjk_font()  # term labels may be Chinese (--desc go_zh.tsv)
+
     outdir = Path(outdir)
+    safe = {name: name.replace("/", "_") for name in results}
     if label_map:
         es_wide = es_wide.rename(columns=label_map)
     lab_len = max((len(str(c)) for c in es_wide.columns), default=0)
@@ -21,7 +24,8 @@ def plot_results(outdir: str | Path, results: dict, es_wide: pd.DataFrame, label
     for name, df in results.items():
         if df.empty:
             continue
-        dc.pl.barplot(es_wide.fillna(0.0), name=name, top=15, save=str(outdir / f"{name}_barplot.png"),
+        fname = safe[name]
+        dc.pl.barplot(es_wide.fillna(0.0), name=name, top=15, save=str(outdir / f"{fname}_barplot.png"),
                       dpi=150, figsize=figsize)
         long = df.head(15).copy()
         score_col = "nes" if "nes" in df.columns else "log_or"
@@ -32,7 +36,7 @@ def plot_results(outdir: str | Path, results: dict, es_wide: pd.DataFrame, label
         else:
             long["label"] = long["term"]
         dc.pl.dotplot(long, x=score_col, y="label", c=score_col, s="nlp", top=15, scale=0.15,
-                      save=str(outdir / f"{name}_dotplot.png"), dpi=150, figsize=figsize)
+                      save=str(outdir / f"{fname}_dotplot.png"), dpi=150, figsize=figsize)
 
 
 def plot_heatmap(summary: pd.DataFrame, outdir: str | Path, name_of) -> None:
