@@ -5,7 +5,7 @@ requires = [ "hatchling" ]
 [project]
 name = "qenrich"
 version = "0.1.0"
-description = "Fast enrichment CLI for non-model organisms (GO/KEGG/Pfam/InterPro), powered by decoupler."
+description = "Quick gene enrichment tools (GO / KEGG / Pfam / InterPro) for non-model organisms."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
