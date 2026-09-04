@@ -85,7 +85,7 @@ Labels follow `--labels {name,id}` (default `name`).
 
 ## Chinese labels
 
-`go_zh.tsv` (38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing.
+`go_zh.tsv` (38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root; pass it with `--desc`:
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \

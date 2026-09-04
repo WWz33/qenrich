@@ -85,7 +85,7 @@ GO:0048519    negative regulation of bio...  生物过程的负调控   17      
 
 ## 中文标签
 
-`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的LLM翻译，未经人工校对，引用前请核对。
+`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的 LLM 翻译，未经人工校对，引用前请核对。该文件在仓库根目录，用 `--desc` 指定：
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \
