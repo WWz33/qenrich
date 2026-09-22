@@ -6,7 +6,9 @@ from pathlib import Path
 from ._io import open_text
 
 _SKIP = {"", "-", "NA", "N/A", "nan", "None"}
-_NUM_CELL = re.compile(r"^(\S+?)[,;]([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$")
+# The id half must not contain a separator, otherwise a bare comma list whose
+# last token is numeric ("7157,672,675,1234") would be read as one gene,weight.
+_NUM_CELL = re.compile(r"^([^\s,;]+?)[,;]([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$")
 
 
 def _split_line(line: str) -> list[str]:

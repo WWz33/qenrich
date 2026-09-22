@@ -4,9 +4,10 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
+from . import __version__
+from ._genelist import _NUM_CELL
 from ._io import cache_dir_for, cache_fresh, load_objects, open_text, read_names, save_objects
 from ._parsers import PARSERS
 from ._plot import plot_heatmap, plot_results
@@ -30,8 +31,12 @@ def _resolve_input(args) -> tuple[str, dict[str, pd.DataFrame]]:
             kwargs = {"annot_lvl": args.eggnog_lvl} if fmt == "eggnog" else {}
             objects = PARSERS[fmt](inp, **kwargs)
             if not getattr(args, "eggnog_lvl", None):  # don't cache level-filtered results
-                save_objects(objects, cdir, inp, fmt)
-                print(f"[qenrich] parsed and cached: {cdir}")
+                try:
+                    save_objects(objects, cdir, inp, fmt)
+                    print(f"[qenrich] parsed and cached: {cdir}")
+                except OSError as e:  # read-only input dir must not abort the run
+                    print(f"[qenrich] warning: could not write cache {cdir} ({e}); continuing",
+                          file=sys.stderr)
             else:
                 print(f"[qenrich] parsed (level-filtered, not cached)")
         if not objects:
@@ -48,10 +53,22 @@ def _resolve_input(args) -> tuple[str, dict[str, pd.DataFrame]]:
 
 
 def _read_bg(path: str) -> list[str]:
+    """Read a background gene list.
+
+    ``gene,weight`` / ``gene;weight`` pairs keep only the id (same markup gene
+    lists accept); bare comma/semicolon lists are split. The pair form is only
+    taken when the id half holds no separator, so an all-numeric comma list such
+    as ``7157,672,675,1234`` stays four genes instead of one.
+    """
     vals = []
     with open_text(path) as fh:
         for line in fh:
-            vals.extend(t for t in line.strip().replace(",", " ").replace(";", " ").split() if t)
+            for tok in line.split():
+                m = _NUM_CELL.match(tok)
+                if m:
+                    vals.append(m.group(1))
+                else:
+                    vals.extend(t for t in tok.replace(",", " ").replace(";", " ").split() if t)
     return vals
 
 
@@ -228,7 +245,7 @@ def cmd_parse(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="qenrich", description=__doc__)
-    ap.add_argument("-V", "--version", action="version", version="%(prog)s 0.1.0")
+    ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     sub = ap.add_subparsers(dest="cmd")
 
     pp = sub.add_parser("parse", help="parse an annotation file into object TSVs")
@@ -249,7 +266,9 @@ def main(argv: list[str] | None = None) -> int:
     ep.add_argument("--no-name-zh", action="store_true", help="omit the Chinese name column from output (English name stays)")
     ep.add_argument("--tmin", type=int, default=5, help="drop terms with fewer targets (default 5)")
     ep.add_argument("--bg", help="background gene list file (default: all annotated genes)")
-    ep.add_argument("--padj", type=float, default=0.05, help="significance cutoff for summary (default 0.05)")
+    ep.add_argument("--padj", type=float, default=0.05,
+                    help="padj cutoff for counting significant terms (and for --drop-parents); "
+                         "outputs are not filtered (default 0.05)")
     ep.add_argument("--strip-suffix", action="store_true", help="drop .N version suffixes from gene ids (Gene01.1 -> Gene01)")
     ep.add_argument("--drop-parents", action="store_true", help="GO only: collapse parent terms with significant children")
     ep.add_argument("--eggnog-lvl", help="eggNOG only: filter rows by max_annot_lvl")

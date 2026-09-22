@@ -750,3 +750,147 @@ def test_enrichplot_ora_gsea_heatplot_coexist(tmp_path):
     plot_results_enrichplot(out, results, stats, None, top=3, tag="gsea_ep")
     assert (out / "ep_heatplot.png").is_file()
     assert (out / "gsea_ep_heatplot.png").is_file()
+
+
+# ================= review round 8: verified-fix regression tests =================
+
+def test_read_bg_weighted_pairs_and_comma_lists(tmp_path):
+    """--bg keeps the id from gene,weight / gene;weight but still splits bare
+    comma/semicolon lists, including all-numeric ones."""
+    from qenrich._cli import _read_bg
+
+    p = wfile(tmp_path, "bg.txt",
+              "Gene01,3.2\nGene02;1.5\nGene03,Gene04\nGene05\n7157,672,675,1234\ng1;g2\n")
+    assert _read_bg(p) == ["Gene01", "Gene02", "Gene03", "Gene04", "Gene05",
+                           "7157", "672", "675", "1234", "g1", "g2"]
+
+
+def test_num_cell_regex_rejects_separator_in_id():
+    """The gene,weight pattern must not swallow a separator inside the id half."""
+    from qenrich._genelist import _NUM_CELL
+
+    assert _NUM_CELL.match("Gene01,3.2").group(1) == "Gene01"
+    assert _NUM_CELL.match("Gene01;3.2").group(1) == "Gene01"
+    assert _NUM_CELL.match("Gene01,-1.5e-3").group(1) == "Gene01"
+    assert _NUM_CELL.match("7157,672,675,1234") is None
+    assert _NUM_CELL.match("a,b,c") is None
+
+
+def test_plot_unique_label_map_disambiguates():
+    """Labels must be unique even when a display name collides with another term id."""
+    from qenrich._plot import _unique_label_map
+
+    m = _unique_label_map(["GO:1", "GO:2", "GO:3"], {"GO:1": "X", "GO:2": "X", "GO:3": "Y"})
+    assert m["GO:1"] == "X" and m["GO:2"] == "GO:2" and m["GO:3"] == "Y"
+    # a label that equals another term's id must still not collide
+    m2 = _unique_label_map(["GO:1", "GO:2"], {"GO:1": "GO:2", "GO:2": "GO:2"})
+    assert len(set(m2.values())) == 2 and set(m2) == {"GO:1", "GO:2"}
+    m3 = _unique_label_map(["A", "B", "C"], {"A": "C", "B": "C", "C": "C"})
+    assert len(set(m3.values())) == 3
+    assert all(len({_unique_label_map(cols, lm)[c] for c in cols}) == len(cols)
+               for cols, lm in [(["a", "b", "c"], {"a": "Z", "b": "Z", "c": "Z"}),
+                                (["a", "b"], {"a": "b", "b": "b"})])
+
+
+def test_obo_propagate_warns_on_dropped_terms(tmp_path, capsys):
+    """Annotations to GO ids absent from the OBO are dropped with a warning."""
+    from qenrich._obo import GeneOntology
+
+    go = GeneOntology.from_obo(wfile(tmp_path, "go.obo", OBO))
+    net = pd.DataFrame({"source": ["GO:0000002", "GO:9999999"], "target": ["g1", "g2"]})
+    out = go.propagate(net)
+    assert "GO:9999999" not in set(out["source"])
+    assert "absent from the OBO" in capsys.readouterr().err
+
+
+def test_cjk_font_scan_cached():
+    """_cjk_font_files must be memoized (no rglob on every plot call)."""
+    from qenrich._plot import _cjk_font_files, use_cjk_font
+
+    assert hasattr(_cjk_font_files, "cache_info")
+    _cjk_font_files.cache_clear()
+    use_cjk_font()
+    use_cjk_font()
+    assert _cjk_font_files.cache_info().misses == 1  # second call is a hit
+
+
+def test_cli_version_uses_package_version(capsys):
+    import pytest
+
+    from qenrich import __version__
+    from qenrich._cli import main
+
+    with pytest.raises(SystemExit):
+        main(["-V"])
+    assert __version__ in capsys.readouterr().out
+
+
+def test_cache_write_failure_does_not_abort(tmp_path, monkeypatch, capsys):
+    """A read-only input dir (cache write fails) must warn, not abort the run."""
+    from qenrich import _cli
+
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "a.tsv").write_text("#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\nG3\tGO:0000001\n")
+    (d / "g.txt").write_text("s\nG1\nG2\nG3\n")
+
+    def boom(*a, **k):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(_cli, "save_objects", boom)
+    rc = _cli.main(["-i", str(d / "a.tsv"), "--genelist", str(d / "g.txt"),
+                    "--tmin", "1", "-o", str(d / "out")])
+    assert rc == 0
+    assert (d / "out" / "s_enrichment.tsv").is_file()
+    assert "could not write cache" in capsys.readouterr().err
+
+
+def test_gsea_padj_matches_decoupler_bh(tmp_path):
+    """run_gsea must pass decoupler's BH-adjusted p-values through unchanged."""
+    import decoupler as dc
+
+    from qenrich._enrich import run_gsea
+
+    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
+    num = {"fc": {"Gene01": 2.0, "Gene03": -1.5, "Gene05": 0.8}}
+    results, _, _ = run_gsea(net, num, tmin=1)
+    got = results["fc"].set_index("term")
+
+    genes = sorted(num["fc"])
+    row = pd.DataFrame([[num["fc"][g] for g in genes]], index=["fc"], columns=genes)
+    es, pv = dc.mt.gsea(row, net, tmin=1, empty=False, verbose=False)
+
+    for term in es.columns:
+        exp_nes = float(es.loc["fc", term])
+        exp_padj = max(float(pv.loc["fc", term]), np.finfo(float).eps)  # run_gsea clips at eps
+        assert abs(got.loc[term, "nes"] - exp_nes) < 1e-9
+        assert abs(got.loc[term, "padj"] - exp_padj) < 1e-9
+
+
+def test_leading_edge_matches_decoupler_esrank():
+    """_leading_edge must agree with decoupler's own ES peak on random vectors."""
+    import numpy as np
+
+    from decoupler.mt._gsea import _esrank
+
+    from qenrich._enrich import _leading_edge
+
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        n_all = int(rng.integers(6, 30))
+        genes = [f"g{i}" for i in range(n_all)]
+        vec = {g: float(rng.normal()) for g in genes}
+        n_set = int(rng.integers(2, n_all))
+        targets = set(rng.choice(genes, size=n_set, replace=False))
+
+        count, edge = _leading_edge(vec, targets)
+
+        order = sorted(vec, key=lambda g: -vec[g])
+        row = np.ascontiguousarray([vec[g] for g in order], dtype=np.float64)
+        set_msk = np.ascontiguousarray([g in targets for g in order])
+        mx, j, _ = _esrank(row, np.arange(n_all), set_msk, 1.0 / (n_all - n_set))
+        # decoupler's own peak index j defines the leading edge (clusterProfiler semantics)
+        exp_edge = ({g for g in order[: j + 1] if g in targets} if mx >= 0
+                    else {g for g in order[j + 1:] if g in targets})
+        assert set(edge) == exp_edge, (vec, targets, j, mx)
+        assert count == len(exp_edge)

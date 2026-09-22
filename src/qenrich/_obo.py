@@ -1,6 +1,7 @@
 """Minimal go-basic.obo parser: term metadata, alt_id mapping, ancestor propagation."""
 
 import re
+import sys
 from functools import lru_cache
 
 from ._io import open_text
@@ -92,15 +93,28 @@ class GeneOntology:
     def propagate(self, net: pd.DataFrame) -> pd.DataFrame:
         """Expand a go net so every (gene, term) row repeats for all ancestors.
 
-        alt_id entries are translated to their primary ID first.
+        alt_id entries are translated to their primary ID first. Terms with no
+        entry in this ontology (e.g. an OBO older than the annotation file) are
+        dropped; a warning reports the loss instead of hiding it.
         """
         rows = []
+        dropped_terms: set[str] = set()
+        dropped_rows = 0
         for term, gene in zip(net["source"], net["target"], strict=True):
             term = self._alt.get(term, term)  # translate alt_id -> primary
             if term not in self._meta:
-                continue  # drop unknown/obsolete terms
+                dropped_terms.add(term)  # no ontology entry: cannot map or propagate
+                dropped_rows += 1
+                continue
             rows.append((term, gene))
             for anc in self.ancestors(term):
                 rows.append((anc, gene))
+        if dropped_terms:
+            print(
+                f"[qenrich] warning: {dropped_rows} annotation(s) dropped: "
+                f"{len(dropped_terms)} GO term(s) absent from the OBO "
+                f"(is --obo older than the annotation file?)",
+                file=sys.stderr,
+            )
         out = pd.DataFrame(rows, columns=["source", "target"]).drop_duplicates()
         return out[out["source"].isin(self._meta)].reset_index(drop=True)

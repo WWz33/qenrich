@@ -121,3 +121,7 @@ qenrich -i data/format/emapper.annotations.tsv \
 ## 注意
 
 `--tmin`（默认 5）丢弃目标基因过少的 term；小注释集调低。
+
+`--padj`（默认 0.05）是统计显著 term 数目、以及配合 `--drop-parents` 判断父 term 是否折叠的阈值；它**不会**过滤 `summary.tsv` 或各 set 的结果表，这些文件按 padj 排序后保留全部测试过的 term。
+
+使用 `--obo` 时，OBO 中不存在的 GO id 注释会被丢弃（无法做 true-path 传播）；stderr 会输出被丢弃数量的警告，当 OBO 比注释文件旧时尤其需要注意。
