@@ -26153,7 +26153,7 @@ GO:0071910	determination of liver left/right asymmetry	肝左右不对称性决�
 GO:0071911	synchronous neurotransmitter secretion	同步神经递质分泌
 GO:0071912	asynchronous neurotransmitter secretion	异步神经递质分泌
 GO:0071913	citrate secondary active transmembrane transporter activity	柠檬酸盐继发性主动跨膜转运蛋白活性
-GO:0071914	prominosome	prominosome
+GO:0071914	prominosome	突出小体
 GO:0071916	dipeptide transmembrane transporter activity	二肽跨膜转运蛋白活性
 GO:0071917	triose-phosphate transmembrane transporter activity	丙糖磷酸跨膜转运蛋白活性
 GO:0071918	urea transmembrane transport	尿素跨膜转运
@@ -26985,7 +26985,7 @@ GO:0080005	photosystem stoichiometry adjustment	光系统化学计量调整
 GO:0080006	internode patterning	节间模式建成
 GO:0080007	S-nitrosoglutathione reductase (NADH) activity	S-亚硝基谷胱甘肽还原酶（NADH）活性
 GO:0080008	Cul4-RING E3 ubiquitin ligase complex	Cul4-RING E3泛素连接酶复合体
-GO:0080011	baruol synthase activity	拟南芥巴如醇合酶活性
+GO:0080011	baruol synthase activity	巴如醇合酶活性
 GO:0080012	trihydroxyferuloyl spermidine O-methyltransferase activity	三羟基阿魏酰亚精胺O-甲基转移酶活性
 GO:0080013	(E,E)-geranyllinalool synthase activity	(E,E)-香叶基芳樟醇合酶活性
 GO:0080014	thalianol hydroxylase activity	拟南芥萜羟化酶活性
@@ -30327,7 +30327,7 @@ GO:0120309	cilium attachment to cell body	纤毛附着于细胞体
 GO:0120310	amastigogenesis	无鞭毛体形成
 GO:0120311	ciliary pro-basal body maturation	纤毛前基体成熟
 GO:0120312	ciliary basal body segregation	纤毛基体分离
-GO:0120313	regulation of oocyte karyosome formation	卵母细胞核仁聚集体的形成
+GO:0120313	regulation of oocyte karyosome formation	卵母细胞核仁聚集形成的调控
 GO:0120314	negative regulation of oocyte karyosome formation	卵母细胞核仁聚集体形成的负调控
 GO:0120315	positive regulation of oocyte karyosome formation	卵母细胞核仁聚集体形成的正调控
 GO:0120316	sperm flagellum assembly	精子鞭毛组装
@@ -37526,7 +37526,7 @@ GO:2000670	positive regulation of dendritic cell apoptotic process	树突状细�
 GO:2000671	regulation of motor neuron apoptotic process	马达神经元凋亡过程的调控
 GO:2000672	negative regulation of motor neuron apoptotic process	马达神经元凋亡过程的负调控
 GO:2000673	positive regulation of motor neuron apoptotic process	马达神经元凋亡过程的正调控
-GO:2000674	regulation of type B pancreatic cell apoptotic process	型B胰腺的细胞凋亡过程的调控
+GO:2000674	regulation of type B pancreatic cell apoptotic process	胰岛B细胞凋亡过程的调控
 GO:2000675	negative regulation of type B pancreatic cell apoptotic process	型B胰腺的细胞凋亡过程的负调控
 GO:2000676	positive regulation of type B pancreatic cell apoptotic process	型B胰腺的细胞凋亡过程的正调控
 GO:2000677	regulation of transcription regulatory region DNA binding	转录调节的区域DNA结合的调控
@@ -38034,7 +38034,7 @@ GO:7770021	intestinal type G enteroendocrine cell differentiation	肠的型G肠�
 GO:7770022	intestinal type I enteroendocrine cell differentiation	肠的型I肠内分泌的细胞分化
 GO:7770023	intestinal type L enteroendocrine cell differentiation	肠的型L肠内分泌的细胞分化
 GO:7770024	intestinal type N enteroendocrine cell differentiation	肠的型N肠内分泌的细胞分化
-GO:7770025	intestinal type D enteroendocrine cell differentiation	肠的型D肠内分泌的细胞分化
+GO:7770025	intestinal type D enteroendocrine cell differentiation	肠D型肠内分泌细胞分化
 GO:7770026	N(6),N(6),N(6)-trimethyl-L-lysine transmembrane transporter activity	N 6、N 6、N 6-三甲基L-赖氨酸跨膜转运蛋白活性
 GO:7770027	dimethylarginine transmembrane transporter activity	二甲基精氨酸跨膜转运蛋白活性
 GO:7770029	phosphatidylserine receptor activity	磷脂酰丝氨酸受体活性
