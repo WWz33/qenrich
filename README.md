@@ -128,6 +128,11 @@ qenrich -i data/format/emapper.annotations.tsv \
 `--drop-parents`, to decide which parents collapse; it does **not** filter
 `summary.tsv` or the per-set tables, which keep every tested term ordered by padj.
 
+`--bg` restricts the ORA background; GSEA works on the ranked list as given, so
+a `--bg` file has no effect on `<set>_gsea.tsv` columns (a warning is printed).
+GSEA rows follow clusterProfiler conventions: `Count` is the leading-edge size
+and `GeneRatio` = `Count`/`setSize`.
+
 With `--obo`, annotations whose GO id is absent from the OBO are dropped (true-path
 propagation cannot map them); a warning on stderr reports the count, and is worth
 heeding when the OBO is older than the annotation file.
