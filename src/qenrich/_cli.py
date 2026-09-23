@@ -113,6 +113,9 @@ def cmd_enrich(args) -> int:
     default_feature, objects = _resolve_input(args)
     if default_feature == "net":
         feature, net = "net", objects["net"]
+        if args.feature and args.feature != "net":
+            print(f"[qenrich] warning: -f {args.feature} ignored: the input is a single net; "
+                  f"enriching its '{feature}' object", file=sys.stderr)
     else:
         feature = args.feature or default_feature
         if feature not in objects:
@@ -203,6 +206,9 @@ def cmd_enrich(args) -> int:
                 print("[qenrich] warning: --drop-parents needs --obo, ignoring", file=sys.stderr)
         report(results, stats, "enrichment", "log_or")
     if numeric:
+        if bg is not None:
+            print("[qenrich] warning: --bg applies to ORA only; GSEA ranks are not background-filtered",
+                  file=sys.stderr)
         results_gsea, nes_wide, stats_gsea = run_gsea(net, numeric, tmin=args.tmin, verbose=args.verbose)
         report(results_gsea, stats_gsea, "gsea", "nes")
 
@@ -213,18 +219,20 @@ def cmd_enrich(args) -> int:
         label_map = None
         if args.labels == "name" and (go or names_df is not None):
             label_map = {t: label_of(t) for t in net["source"].unique()}
+        # --labels id keeps ids on the heatmap too (label_of falls back to id)
+        heat_label = (lambda t: t) if args.labels == "id" else label_of
         if args.style == "enrichplot":
             if sets:
                 plot_results_enrichplot(outdir, results, stats, label_map, tag="ep")
             if numeric:
                 plot_results_enrichplot(outdir, results_gsea, stats_gsea, label_map, tag="gsea_ep")
-            plot_heatmap(pd.concat(summary), outdir, label_of)
+            plot_heatmap(pd.concat(summary), outdir, heat_label)
         else:
             if sets:
                 plot_results(outdir, results, es_wide, label_map)
             if numeric:
                 plot_results(outdir, results_gsea, nes_wide, label_map)
-            plot_heatmap(pd.concat(summary), outdir, label_of)
+            plot_heatmap(pd.concat(summary), outdir, heat_label)
         print(f"[qenrich] plots written to {outdir}")
     return 0
 

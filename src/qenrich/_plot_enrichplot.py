@@ -4,11 +4,11 @@ Visual spec extracted from enrichplot/R (dotplot.R, barplot.R, heatplot.R,
 color_utils.R) and ggfun::theme_dose:
 
   - dotplot (.dotplot_internal): x = GeneRatio, y = Description (ordered by
-    GeneRatio desc, labels truncated at 30 chars), shape-21 points (black
-    border, fill = p.adjust), fill scale = two-colour gradient
-    #327eba (low/significant) -> #e06663 (high) with log10 transform
-    (get_enrichplot_color(2) reversed), size = Count via
-    scale_size(range=c(3,8)) with pretty breaks, theme_dose.
+    GeneRatio desc), shape-21 points (black border, fill = p.adjust), fill
+    scale = two-colour gradient #327eba (low/significant) -> #e06663 (high)
+    with log10 transform (get_enrichplot_color(2) reversed), size = Count via
+    scale_size(range=c(3,8)) with pretty breaks, theme_dose. R wraps long
+    labels (yulab.utils::str_wrap); here they are kept in full (LAB_MAX=0).
   - barplot: x = Count, same fill scale and theme.
   - heatplot (no foldChange): black shape-21 dots on a white ground at
     gene x term membership, y = term labels, x = genes.

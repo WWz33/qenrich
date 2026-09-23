@@ -109,7 +109,9 @@ def _leading_edge(vec: dict[str, float], term_targets: set[str]) -> tuple[int, l
         return 0, []
     if n_all == n_set:  # term covers all ranked genes; all are leading edge
         return n_set, genes
-    sum_set = sum(abs(vec[g]) for g in genes) or 1.0
+    sum_set = sum(abs(vec[g]) for g in genes)
+    if sum_set == 0.0:  # every hit has weight 0: no direction, no leading edge
+        return 0, []
     dec = 1.0 / (n_all - n_set)
     cum = 0.0
     mx_pos = mx_neg = 0.0
@@ -141,8 +143,9 @@ def run_gsea(
     Each vector becomes one row over the genes it contains; genes absent from
     the vector are not ranked (standard GSEA semantics).
 
-    Returns per-set tables (term, term_size, nes, padj), a set x term NES wide
-    frame, and run statistics.
+    Returns per-set tables (term, term_size, Count = leading-edge size, genes,
+    nes, padj, GeneRatio = Count/setSize as in clusterProfiler), a set x term
+    NES wide frame, and run statistics.
     """
     term_targets = net.groupby("source")["target"].apply(lambda s: set(s)).to_dict()
     universe = set(net["target"])
@@ -153,14 +156,14 @@ def run_gsea(
         genes = sorted(set(vec) & universe)
         stats[name] = {"n_input": len(vec), "n_hit": len(genes), "n_terms": 0, "n_pruned": 0}
         if not genes:
-            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio"])
+            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"])
             continue
         if all(w == 0 for w in (vec[g] for g in genes)):
             # all-zero weights crash decoupler's running sum (division by zero)
-            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio"])
+            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"])
             continue
         if len(genes) < tmin:
-            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio"])
+            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"])
             stats[name]["n_pruned"] = len(term_targets)
             continue
         row = pd.DataFrame(
@@ -172,7 +175,7 @@ def run_gsea(
             es, pv = dc.mt.gsea(row, net, tmin=tmin, empty=False, verbose=verbose)
         except AssertionError as e:  # no term shares >= tmin targets with this row
             print(f"[qenrich] warning: GSEA set '{name}' skipped ({e})", file=sys.stderr)
-            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio"])
+            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"])
             continue
         recs = []
         for t in es.columns:
@@ -181,7 +184,9 @@ def run_gsea(
                          float(es.loc[name, t]), float(pv.loc[name, t])))
         df = pd.DataFrame(recs, columns=["term", "term_size", "Count", "genes", "nes", "padj"])
         df["padj"] = df["padj"].clip(lower=np.finfo(float).eps)  # 0.0 breaks log colour scales
+        # clusterProfiler semantics: GeneRatio = core_enrichment / filtered set size
         df["GeneRatio"] = df["Count"] / max(len(genes), 1)
+        df["setSize"] = len(genes)
         df = df.sort_values("padj").reset_index(drop=True)
         results[name] = df
         es_rows[name] = es.loc[name]

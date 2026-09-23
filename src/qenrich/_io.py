@@ -15,12 +15,16 @@ def open_text(path: str | Path):
 
 
 def read_names(path: str | Path) -> pd.DataFrame:
-    """Read a multi-column id->names TSV (--desc) verbatim.
+    """Read a multi-column id->names TSV (--desc) verbatim, dropping a header row.
 
     For ``go_zh.tsv`` (``ID\\tEnglish\\tChinese``) the caller picks column 2 as
-    the English name and column 3 as the Chinese name.
+    the English name and column 3 as the Chinese name. A first row whose first
+    cell is not a term id (a header, e.g. ``id\\tname\\tname_zh``) is skipped.
     """
-    return pd.read_csv(path, sep="\t", header=None, dtype=str, keep_default_na=False, index_col=False)
+    df = pd.read_csv(path, sep="\t", header=None, dtype=str, keep_default_na=False, index_col=False)
+    if len(df) and df.iloc[0, 0].strip().lower() in {"id", "term", "go", "gene"}:
+        df = df.iloc[1:].reset_index(drop=True)
+    return df
 
 
 def cache_dir_for(annot_path: str | Path) -> Path:

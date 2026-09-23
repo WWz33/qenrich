@@ -253,7 +253,7 @@ def test_gsea_numeric_column(tmp_path):
     assert set(sets) == {"up"} and set(num) == {"fc"}
     results, nes_wide, stats = run_gsea(net, num, tmin=1)  # 3-gene subset: any tmin>1 prunes all
     df = results["fc"]
-    assert set(df.columns) == {"term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio"}
+    assert set(df.columns) == {"term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"}
     assert len(df) == 3
     assert stats["fc"]["n_hit"] == 3
     assert df["Count"].notna().all() and (df["Count"] >= 0).all()
@@ -894,3 +894,84 @@ def test_leading_edge_matches_decoupler_esrank():
                     else {g for g in order[j + 1:] if g in targets})
         assert set(edge) == exp_edge, (vec, targets, j, mx)
         assert count == len(exp_edge)
+
+
+# ================= round-2 review fixes =================
+
+def test_read_names_header_row_skipped(tmp_path):
+    """A --desc file with a header row must not inject bogus name mappings."""
+    from qenrich._io import read_names
+
+    text = "id\tname\tzh\nGO:0000001\tstress\t应激\nGO:0000002\tbinding\t结合\n"
+    df = read_names(wfile(tmp_path, "hdr.tsv", text))
+    assert set(df.iloc[:, 0]) == {"GO:0000001", "GO:0000002"}
+    # header-less files are untouched
+    df2 = read_names(wfile(tmp_path, "nohdr.tsv", "GO:0000001\tstress\t应激\n"))
+    assert df2.iloc[0, 1] == "stress"
+
+
+def test_leading_edge_all_zero_term_weights():
+    """A term whose genes all carry weight 0 has no direction: empty edge."""
+    from qenrich._enrich import _leading_edge
+
+    vec = {"a": 0.0, "b": 0.0, "c": 3.0, "d": -2.0, "e": 1.0}
+    assert _leading_edge(vec, {"a", "b"}) == (0, [])
+    # mixed (one zero-weight hit among non-zero): the zero adds nothing but the
+    # term still has direction, so an edge exists
+    count, edge = _leading_edge({"a": 0.0, "b": 5.0, "c": -1.0, "d": -1.0}, {"a", "b"})
+    assert count >= 1 and "b" in edge
+
+
+def test_gsea_generatio_is_count_over_set_size(tmp_path):
+    """GeneRatio follows clusterProfiler: Count (leading edge) / setSize."""
+    from qenrich._enrich import run_gsea
+
+    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
+    num = {"fc": {"Gene01": 2.0, "Gene02": 1.0, "Gene03": -1.0}}
+    results, _, _ = run_gsea(net, num, tmin=1)
+    d = results["fc"]
+    assert "setSize" in d.columns
+    assert (d["GeneRatio"] == d["Count"] / d["setSize"]).all()
+    assert (d["setSize"] == 3).all()
+
+
+def test_bg_ignored_for_gsea_warns(tmp_path, capsys):
+    """--bg applies to ORA only; GSEA runs must warn about the ignore."""
+    from qenrich._cli import main
+
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "net.tsv").write_text(NET)
+    (d / "gl.txt").write_text("fc\nGene01,2.0\nGene03,-1.5\nGene05,0.8\n")
+    (d / "bg.txt").write_text("Gene01\nGene02\nGene03\n")
+    rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+               "--tmin", "1", "--bg", str(d / "bg.txt"), "-o", str(d / "out")])
+    assert rc == 0
+    assert "--bg applies to ORA only" in capsys.readouterr().err
+
+
+def test_labels_id_applies_to_heatmap(tmp_path, capsys):
+    """--labels id must keep term ids on the summary heatmap too."""
+    from qenrich import _cli
+
+    captured = {}
+    orig = _cli.plot_heatmap
+
+    def spy(summary, outdir, name_of):
+        captured["label"] = name_of(summary["term"].iloc[0])
+        return orig(summary, outdir, name_of)
+
+    _cli.plot_heatmap = spy
+    try:
+        d = tmp_path / "run"
+        d.mkdir()
+        (d / "net.tsv").write_text(NET)
+        (d / "gl.txt").write_text("up\nGene01\nGene02\nGene03\n")
+        (d / "desc.tsv").write_text("GO:0000001\tstress\t应激\n")
+        rc = _cli.main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+                        "--tmin", "1", "--desc", str(d / "desc.tsv"),
+                        "--labels", "id", "-o", str(d / "out"), "--plot"])
+        assert rc == 0
+        assert captured["label"] == "GO:0000001"  # id, not "stress"
+    finally:
+        _cli.plot_heatmap = orig
