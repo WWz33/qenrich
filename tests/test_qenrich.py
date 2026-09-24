@@ -800,7 +800,7 @@ def test_obo_propagate_warns_on_dropped_terms(tmp_path, capsys):
     net = pd.DataFrame({"source": ["GO:0000002", "GO:9999999"], "target": ["g1", "g2"]})
     out = go.propagate(net)
     assert "GO:9999999" not in set(out["source"])
-    assert "absent from the OBO" in capsys.readouterr().err
+    assert "no entry in the OBO" in capsys.readouterr().err
 
 
 def test_cjk_font_scan_cached():
@@ -1023,26 +1023,91 @@ def test_dotplot_axes_after_labels(tmp_path):
     assert cap["ok"]  # labels sit fully left of the axes
 
 
-def test_en_default_uses_go_zh_names(tmp_path, capsys, monkeypatch):
-    """Without --desc/--obo, plots default to English names from the shipped go_zh.tsv."""
+def test_en_default_uses_bundled_obo(tmp_path, capsys):
+    """The bundled go-basic.obo is used by default: it propagates the DAG and
+    supplies English term names, with no --obo flag."""
     from qenrich import _cli
 
     cap = {}
     orig_hm = _cli.plot_heatmap
     _cli.plot_heatmap = lambda s, o, n: (cap.update(lab=n(s["term"].iloc[0])),
                                          orig_hm(s, o, n))[1]
-    # run from the repo root so Path.cwd()/go_zh.tsv is found
-    monkeypatch.chdir("/sri/home/sri2025201067/qenrich/qenrich")
     d = tmp_path / "run"
     d.mkdir()
-    (d / "net.tsv").write_text("source\ttarget\nGO:0000001\tg1\nGO:0000001\tg2\nGO:0000001\tg3\n")
+    (d / "net.tsv").write_text("source\ttarget\nGO:0006950\tg1\nGO:0006950\tg2\nGO:0006950\tg3\n")
     (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
     try:
         rc = _cli.main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
                         "--tmin", "1", "-o", str(d / "out"), "--plot"])
         assert rc == 0
-        # GO:0000001's English name in go_zh.tsv is "mitochondrion inheritance"
-        assert cap["lab"] == "mitochondrion inheritance"
-        assert "go_zh.tsv for term names" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "propagated GO DAG (bundled OBO" in out
+        assert cap["lab"] == "response to stress"  # GO:0006950, from the OBO
     finally:
         _cli.plot_heatmap = orig_hm
+
+
+def test_no_obo_and_go_zh_fallback(tmp_path, capsys, monkeypatch):
+    """--no-obo skips the DAG; names then fall back to the shipped go_zh.tsv."""
+    from qenrich import _cli
+
+    cap = {}
+    orig_hm = _cli.plot_heatmap
+    _cli.plot_heatmap = lambda s, o, n: (cap.update(lab=n(s["term"].iloc[0])),
+                                         orig_hm(s, o, n))[1]
+    monkeypatch.chdir("/sri/home/sri2025201067/qenrich/qenrich")  # Path.cwd()/go_zh.tsv
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "net.tsv").write_text("source\ttarget\nGO:0006950\tg1\nGO:0006950\tg2\nGO:0006950\tg3\n")
+    (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
+    try:
+        rc = _cli.main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+                        "--tmin", "1", "--no-obo", "-o", str(d / "out"), "--plot"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "propagated GO DAG" not in out
+        assert "go_zh.tsv for term names" in out
+        assert cap["lab"] == "response to stress"  # same name, from go_zh.tsv col 2
+    finally:
+        _cli.plot_heatmap = orig_hm
+
+
+# ================= bundled OBO: default on, obsolete-term redirection =================
+
+def test_bundled_obo_is_found():
+    from qenrich._cli import _bundled_obo
+    p = _bundled_obo()
+    assert p and Path(p).is_file()
+    assert Path(p).name.startswith("go-basic")
+
+
+def test_obsolete_term_maps_to_replacement(tmp_path):
+    """A retired GO term with replaced_by keeps its annotations via the replacement."""
+    from qenrich._obo import GeneOntology
+
+    obo = (
+        "[Term]\nid: GO:0000001\nname: live parent\nnamespace: biological_process\n\n"
+        "[Term]\nid: GO:0000002\nname: retired\nnamespace: biological_process\n"
+        "is_obsolete: true\nreplaced_by: GO:0000001\n\n"
+        "[Term]\nid: GO:0000003\nname: retired no replacement\nnamespace: biological_process\n"
+        "is_obsolete: true\n"
+    )
+    go = GeneOntology.from_obo(wfile(tmp_path, "r.obo", obo))
+    assert go._alt["GO:0000002"] == "GO:0000001"  # redirected
+    assert "GO:0000003" not in go._meta and "GO:0000003" not in go._alt  # unmappable, dropped
+    net = pd.DataFrame({"source": ["GO:0000002", "GO:0000003"], "target": ["g1", "g2"]})
+    out = go.propagate(net)
+    assert set(zip(out["source"], out["target"])) == {("GO:0000001", "g1")}
+
+
+def test_no_obo_flag_skips_propagation(tmp_path, capsys):
+    from qenrich._cli import main
+
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "net.tsv").write_text("source\ttarget\nGO:0006950\tg1\nGO:0006950\tg2\nGO:0006950\tg3\n")
+    (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
+    rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+               "--tmin", "1", "--no-obo", "-o", str(d / "out")])
+    assert rc == 0
+    assert "propagated GO DAG" not in capsys.readouterr().out

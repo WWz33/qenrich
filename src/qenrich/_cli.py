@@ -52,6 +52,18 @@ def _resolve_input(args) -> tuple[str, dict[str, pd.DataFrame]]:
         f"-i must be an existing file or an object name in --db (looked for {obj_file})")
 
 
+def _bundled_obo() -> str | None:
+    """The go-basic.obo shipped with the package (or a source checkout root)."""
+    here = Path(__file__).resolve().parent
+    root = here.parent.parent
+    for cand in (here / "data" / "go-basic.obo.gz",
+                 root / "data" / "go-basic.obo",
+                 root / "data" / "go-basic.obo.gz"):
+        if cand.is_file():
+            return str(cand)
+    return None
+
+
 def _read_bg(path: str) -> list[str]:
     """Read a background gene list.
 
@@ -124,13 +136,24 @@ def cmd_enrich(args) -> int:
     print(f"[qenrich] enriching feature: {feature} ({net['source'].nunique()} terms, {net['target'].nunique()} genes)")
 
     go = None
-    if args.obo:
+    obo_path = None if getattr(args, "no_obo", False) else (args.obo or _bundled_obo())
+    if obo_path:
         # applies whenever the active net holds GO ids, whatever the input route
         # (annotation file, parsed object db, or net TSV)
         if net["source"].astype(str).str.match(r"GO:\d{7}$").any():
-            go = GeneOntology.from_obo(args.obo)
+            go = GeneOntology.from_obo(obo_path)
+            src = "bundled" if not args.obo else "given"
+            raw_terms, raw_genes = net["source"].nunique(), net["target"].nunique()
             net = go.propagate(net)
-            print(f"[qenrich] propagated GO DAG: {net['source'].nunique()} terms, {net['target'].nunique()} genes")
+            if net.empty and raw_terms:
+                # every id missing from this OBO (older release, non-GO ids in a go
+                # column): propagating would silently yield nothing, so keep the raw net
+                print(f"[qenrich] warning: none of the {raw_terms} terms are in {obo_path}; "
+                      f"skipping propagation", file=sys.stderr)
+                go = None
+            else:
+                print(f"[qenrich] propagated GO DAG ({src} OBO: {Path(obo_path).name}): "
+                      f"{net['source'].nunique()} terms, {net['target'].nunique()} genes")
         else:
             print("[qenrich] warning: --obo needs a go net, ignoring", file=sys.stderr)
 
@@ -141,14 +164,14 @@ def cmd_enrich(args) -> int:
         print("[qenrich] stripped .N version suffixes from gene ids")
 
     # name resolvers: English from --desc col 2 or --obo; Chinese from --desc col 3.
-    # With no source given, the shipped go_zh.tsv (repo root) still supplies English
-    # GO names so plots default to names instead of bare ids.
+    # With no source given, the shipped go_zh.tsv (repo root, or the copy inside the
+    # package) supplies English GO names so plots default to names, not bare ids.
     names_df = args._names_df
     auto_names = False  # go_zh.tsv picked up implicitly: English only for plot labels
     if names_df is None and (go is None) and args.labels == "name":
-        bundled = Path(__file__).resolve().parent.parent.parent / "go_zh.tsv"
-        alt = Path.cwd() / "go_zh.tsv"
-        for cand in (alt, bundled):
+        here = Path(__file__).resolve().parent
+        for cand in (Path.cwd() / "go_zh.tsv", here.parent.parent / "go_zh.tsv",
+                     here / "data" / "go_zh.tsv.gz"):
             if cand.is_file():
                 names_df = read_names(cand)
                 auto_names = True
@@ -215,7 +238,8 @@ def cmd_enrich(args) -> int:
                 results = drop_parents(results, go, thr=args.padj)
                 print(f"[qenrich] dropped parent terms with significant children (padj<{args.padj})")
             else:
-                print("[qenrich] warning: --drop-parents needs --obo, ignoring", file=sys.stderr)
+                print("[qenrich] warning: --drop-parents needs GO terms from an OBO (not --no-obo), ignoring",
+                      file=sys.stderr)
         report(results, stats, "enrichment", "log_or")
     if numeric:
         if bg is not None:
@@ -281,7 +305,10 @@ def main(argv: list[str] | None = None) -> int:
     ep.add_argument("-c", "--columns", help="comma-separated gene-list columns to run (header names or 1-based indices; default: all)")
     ep.add_argument("-f", "--feature", help="object to enrich (go/kegg/pfam/interpro/cog/pathway); default: go if present")
     ep.add_argument("--db", default="qenrich_db", help="object db dir (default ./qenrich_db)")
-    ep.add_argument("--obo", help="go-basic.obo: propagate parents + term names")
+    ep.add_argument("--obo", help="go-basic.obo: propagate parents + term names "
+                    "(default: the go-basic.obo bundled in data/)")
+    ep.add_argument("--no-obo", action="store_true",
+                    help="do not propagate the GO DAG (skip the bundled OBO)")
     ep.add_argument("--desc", help="id->names TSV; col 2 = English name, col 3 = Chinese name (e.g. go_zh.tsv)")
     ep.add_argument("--no-name-zh", action="store_true", help="omit the Chinese name column from output (English name stays)")
     ep.add_argument("--tmin", type=int, default=5, help="drop terms with fewer targets (default 5)")
@@ -296,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     ep.add_argument("--format", choices=FORMATS, help="force input format")
     ep.add_argument("--no-header", action="store_true", help="gene list has no header row")
     ep.add_argument("--labels", choices=["name", "id"], default="name",
-                    help="plot label style: English term name (default; needs --obo/--desc, else falls back to id) or bare term id")
+                    help="plot label style: English term name (default; from --obo/--desc, else term id) or bare term id")
     ep.add_argument("--plot", action="store_true", help="write barplot/dotplot/heatmap PNGs")
     ep.add_argument("--style", choices=["matplotlib", "enrichplot"], default="matplotlib",
                     help="plot style: dc.pl matplotlib (default) or enrichplot (GeneRatio dotplot, Count barplot, heatplot)")

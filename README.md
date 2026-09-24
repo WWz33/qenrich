@@ -29,11 +29,17 @@ qenrich -i go --genelist gene_list.txt --db qenrich_db/
 # parse into an object db for reuse
 qenrich parse emapper.annotations.tsv -o qenrich_db/
 
-# GO propagation + term names (recommended)
+# GO propagation + term names (on by default, from the bundled go-basic.obo)
+qenrich -i emapper.annotations.tsv --genelist gene_list.txt
+
+# use a different/newer OBO release
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt --obo go-basic.obo
 
+# skip propagation (raw annotations only)
+qenrich -i emapper.annotations.tsv --genelist gene_list.txt --no-obo
+
 # collapse parents with significant children; name KEGG/Pfam; strip .N suffixes
-qenrich -i go --genelist gene_list.txt --obo go-basic.obo --drop-parents \
+qenrich -i go --genelist gene_list.txt --drop-parents \
         --desc ko_ids.txt --strip-suffix
 
 # eggNOG: one annotation level
@@ -85,7 +91,7 @@ Labels follow `--labels {name,id}` (default `name`).
 
 ## Chinese labels
 
-`go_zh.tsv` (38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root; pass it with `--desc`:
+`go_zh.tsv` (38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root and (gzipped) inside the package; pass it with `--desc`:
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \
@@ -133,6 +139,8 @@ a `--bg` file has no effect on `<set>_gsea.tsv` columns (a warning is printed).
 GSEA rows follow clusterProfiler conventions: `Count` is the leading-edge size
 and `GeneRatio` = `Count`/`setSize`.
 
-With `--obo`, annotations whose GO id is absent from the OBO are dropped (true-path
-propagation cannot map them); a warning on stderr reports the count, and is worth
-heeding when the OBO is older than the annotation file.
+GO analyses propagate the DAG and take term names from the bundled `go-basic.obo`
+(2026-07-26, in `src/qenrich/data/`); `--obo` points at a different release and
+`--no-obo` turns propagation off. Annotations to a retired term follow its
+`replaced_by` target; terms the OBO does not list are dropped with a warning on
+stderr, which is expected when the annotation predates the OBO release.

@@ -29,11 +29,17 @@ qenrich -i go --genelist gene_list.txt --db qenrich_db/
 # 解析成对象库以便复用
 qenrich parse emapper.annotations.tsv -o qenrich_db/
 
-# GO 传播 + 术语名（GO 分析建议加）
+# GO 传播 + 术语名（默认启用，用内置 go-basic.obo）
+qenrich -i emapper.annotations.tsv --genelist gene_list.txt
+
+# 换用其他/更新的 OBO 版本
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt --obo go-basic.obo
 
+# 关闭传播（只用原始注释）
+qenrich -i emapper.annotations.tsv --genelist gene_list.txt --no-obo
+
 # 折叠有显著子节点的父节点；给 KEGG/Pfam 补名；去 .N 后缀
-qenrich -i go --genelist gene_list.txt --obo go-basic.obo --drop-parents \
+qenrich -i go --genelist gene_list.txt --drop-parents \
         --desc ko_ids.txt --strip-suffix
 
 # eggNOG：只保留一个注释层级
@@ -85,7 +91,7 @@ GO:0048519    negative regulation of bio...  生物过程的负调控   17      
 
 ## 中文标签
 
-`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的 LLM 翻译，未经人工校对，引用前请核对。该文件在仓库根目录，用 `--desc` 指定：
+`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的 LLM 翻译，未经人工校对，引用前请核对。该文件在仓库根目录，包内也带一份（gzip 压缩），用 `--desc` 指定：
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \
@@ -124,6 +130,6 @@ qenrich -i data/format/emapper.annotations.tsv \
 
 `--padj`（默认 0.05）是统计显著 term 数目、以及配合 `--drop-parents` 判断父 term 是否折叠的阈值；它**不会**过滤 `summary.tsv` 或各 set 的结果表，这些文件按 padj 排序后保留全部测试过的 term。
 
-使用 `--obo` 时，OBO 中不存在的 GO id 注释会被丢弃（无法做 true-path 传播）；stderr 会输出被丢弃数量的警告，当 OBO 比注释文件旧时尤其需要注意。
+GO 分析默认用内置的 `go-basic.obo`（2026-07-26，位于 `src/qenrich/data/`）做 DAG 传播并取术语名；`--obo` 可指定其他版本，`--no-obo` 关闭传播。指向已废弃 term 的注释会按其 `replaced_by` 转到替代 term；OBO 中完全没有的 term 会被丢弃并在 stderr 打警告——注释文件早于 OBO 版本时属正常现象。
 
 `--bg` 只限制 ORA 的背景集；GSEA 按给出的排序列表直接分析，`--bg` 对 `<set>_gsea.tsv` 不起作用（会打印警告）。GSEA 结果列沿用 clusterProfiler 惯例：`Count` 为 leading-edge 基因数，`GeneRatio` = `Count`/`setSize`。

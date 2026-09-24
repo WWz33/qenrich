@@ -83,7 +83,8 @@ def plot_heatmap(summary: pd.DataFrame, outdir: str | Path, name_of) -> None:
     p["nlp"] = -np.log10(p["padj"].clip(lower=2.22e-16))
     mat = p.pivot_table(index="term", columns="set", values="nlp", aggfunc="max")
     mat = mat.loc[mat.max(axis=1).sort_values(ascending=False).index].head(30)
-    fig, ax = plt.subplots(figsize=(1.0 + 1.4 * mat.shape[1], 0.22 * len(mat) + 1.0), dpi=150, layout="tight")
+    # no layout="tight" here: with ~30 rows of labels tight layout gives up and warns
+    fig, ax = plt.subplots(figsize=(1.0 + 1.4 * mat.shape[1], 0.22 * len(mat) + 1.0), dpi=150)
     im = ax.imshow(mat.values, aspect="auto", cmap="Reds")
     ax.set_xticks(range(mat.shape[1]), mat.columns, rotation=45, ha="right")
     ax.set_yticks(range(len(mat)), [name_of(t) or t for t in mat.index], fontsize=6)
