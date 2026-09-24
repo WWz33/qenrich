@@ -40,6 +40,8 @@ class GeneOntology:
                 rep = c.get("replaced_by")
                 if rep:
                     alt[c["id"]] = rep
+                    for a in c["alt"]:
+                        alt[a] = rep
                 return
             parents[c["id"]] = c["is_a"] | c["part_of"]
             meta[c["id"]] = (c["name"] or "", c["namespace"] or "")
@@ -78,6 +80,13 @@ class GeneOntology:
                     cur = None
         if cur is not None and cur["id"]:
             commit(cur)
+        # a redirect must land on a live term: follow retired -> retired chains
+        for k in list(alt):
+            tgt, seen = alt[k], set()
+            while tgt not in meta and tgt in alt and tgt not in seen:
+                seen.add(tgt)
+                tgt = alt[tgt]
+            alt[k] = tgt
         return cls(parents, meta, alt)
 
     @lru_cache(maxsize=None)
@@ -111,21 +120,26 @@ class GeneOntology:
         rows = []
         dropped_terms: set[str] = set()
         dropped_rows = 0
-        for term, gene in zip(net["source"], net["target"], strict=True):
-            term = self._alt.get(term, term)  # translate alt_id -> primary
+        for raw, gene in zip(net["source"], net["target"], strict=True):
+            term = self._alt.get(raw, raw)  # alt_id -> primary, retired -> replacement
             if term not in self._meta:
-                dropped_terms.add(term)  # no ontology entry: cannot map or propagate
+                dropped_terms.add(raw)  # the id as it appears in the user's file
                 dropped_rows += 1
                 continue
             rows.append((term, gene))
             for anc in self.ancestors(term):
                 rows.append((anc, gene))
-        if dropped_terms:
-            print(
-                f"[qenrich] warning: {dropped_rows} annotation(s) dropped: "
-                f"{len(dropped_terms)} GO term(s) have no entry in the OBO "
-                f"(retired without a replacement, or the OBO predates the annotation)",
-                file=sys.stderr,
-            )
         out = pd.DataFrame(rows, columns=["source", "target"]).drop_duplicates()
-        return out[out["source"].isin(self._meta)].reset_index(drop=True)
+        out = out[out["source"].isin(self._meta)].reset_index(drop=True)
+        if dropped_terms:
+            lost = set(net["target"]) - set(out["target"])
+            sample = ", ".join(sorted(dropped_terms)[:5])
+            more = f" (+{len(dropped_terms) - 5} more)" if len(dropped_terms) > 5 else ""
+            msg = (f"[qenrich] warning: {dropped_rows} annotation(s) dropped: "
+                   f"{len(dropped_terms)} GO term(s) have no entry in the OBO "
+                   f"(retired without a replacement, or the OBO predates the annotation): "
+                   f"{sample}{more}")
+            if lost:
+                msg += f"; {len(lost)} gene(s) left with no GO annotation"
+            print(msg, file=sys.stderr)
+        return out

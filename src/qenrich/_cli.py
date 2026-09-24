@@ -136,22 +136,27 @@ def cmd_enrich(args) -> int:
     print(f"[qenrich] enriching feature: {feature} ({net['source'].nunique()} terms, {net['target'].nunique()} genes)")
 
     go = None
+    if getattr(args, "no_obo", False) and args.obo:
+        print(f"[qenrich] warning: --no-obo wins; --obo {args.obo} ignored", file=sys.stderr)
+    if args.obo == "":
+        print("[qenrich] warning: --obo is empty; using the bundled OBO", file=sys.stderr)
+        args.obo = None
     obo_path = None if getattr(args, "no_obo", False) else (args.obo or _bundled_obo())
     if obo_path:
         # applies whenever the active net holds GO ids, whatever the input route
         # (annotation file, parsed object db, or net TSV)
         if net["source"].astype(str).str.match(r"GO:\d{7}$").any():
-            go = GeneOntology.from_obo(obo_path)
-            src = "bundled" if not args.obo else "given"
-            raw_terms, raw_genes = net["source"].nunique(), net["target"].nunique()
-            net = go.propagate(net)
-            if net.empty and raw_terms:
-                # every id missing from this OBO (older release, non-GO ids in a go
-                # column): propagating would silently yield nothing, so keep the raw net
-                print(f"[qenrich] warning: none of the {raw_terms} terms are in {obo_path}; "
-                      f"skipping propagation", file=sys.stderr)
-                go = None
+            onto = GeneOntology.from_obo(obo_path)
+            propagated = onto.propagate(net)
+            if propagated.empty:
+                # every id missing from this OBO (annotation newer than the OBO):
+                # propagating would yield nothing, so keep the raw annotations
+                print(f"[qenrich] warning: none of the {net['source'].nunique()} terms are in "
+                      f"{obo_path}; skipping propagation", file=sys.stderr)
             else:
+                go = onto
+                net = propagated
+                src = "bundled" if not args.obo else "given"
                 print(f"[qenrich] propagated GO DAG ({src} OBO: {Path(obo_path).name}): "
                       f"{net['source'].nunique()} terms, {net['target'].nunique()} genes")
         else:
@@ -178,7 +183,8 @@ def cmd_enrich(args) -> int:
             zh_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 2].fillna("")))
 
     def en_of(term: str) -> str:
-        return en_map.get(term) or (go.name(term) if go else "") or ""
+        # the OBO is the authority for GO ids; --desc only fills the gaps (KEGG, Pfam)
+        return (go.name(term) if go else "") or en_map.get(term) or ""
 
     def zh_of(term: str) -> str:
         return zh_map.get(term, "")
@@ -340,8 +346,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd is None and (not args.i or not args.genelist):
         ap.error("enrichment requires -i INPUT and --genelist FILE (or use the 'parse' subcommand)")
-    args._names_df = read_names(_resolve_desc(args.desc)) if getattr(args, "desc", None) else None
     try:
+        args._names_df = read_names(_resolve_desc(args.desc)) if getattr(args, "desc", None) else None
         return args.func(args)
     except (ValueError, KeyError, FileNotFoundError, AssertionError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)

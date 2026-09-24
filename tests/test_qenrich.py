@@ -1047,7 +1047,7 @@ def test_en_default_uses_bundled_obo(tmp_path, capsys):
         _cli.plot_heatmap = orig_hm
 
 
-def test_no_obo_leaves_ids_as_labels(tmp_path, capsys, monkeypatch):
+def test_no_obo_leaves_ids_as_labels(tmp_path, capsys):
     """--no-obo means no ontology: no propagation and no term names, just ids.
     go_zh.tsv is never picked up implicitly (--desc is the only way in)."""
     from qenrich import _cli
@@ -1056,8 +1056,6 @@ def test_no_obo_leaves_ids_as_labels(tmp_path, capsys, monkeypatch):
     orig_hm = _cli.plot_heatmap
     _cli.plot_heatmap = lambda s, o, n: (cap.update(lab=n(s["term"].iloc[0])),
                                          orig_hm(s, o, n))[1]
-    # even from the repo root, where go_zh.tsv sits, it must not be auto-loaded
-    monkeypatch.chdir("/sri/home/sri2025201067/qenrich/qenrich")
     d = tmp_path / "run"
     d.mkdir()
     (d / "net.tsv").write_text("source\ttarget\nGO:0006950\tg1\nGO:0006950\tg2\nGO:0006950\tg3\n")
@@ -1142,3 +1140,107 @@ def test_no_obo_flag_skips_propagation(tmp_path, capsys):
                "--tmin", "1", "--no-obo", "-o", str(d / "out")])
     assert rc == 0
     assert "propagated GO DAG" not in capsys.readouterr().out
+
+
+# ============ review-of-review fixes: revert guard, warnings, precedence ============
+
+ALL_UNKNOWN_NET = ("source\ttarget\n"
+                   "GO:9000001\tg1\nGO:9000001\tg2\nGO:9000002\tg3\n")
+
+
+def test_empty_propagation_restores_raw_net(tmp_path, capsys):
+    """When NO term maps into the OBO, enrichment must still run on the raw net."""
+    from qenrich._cli import main
+
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "net.tsv").write_text(ALL_UNKNOWN_NET)
+    (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
+    (d / "tiny.obo").write_text(
+        "[Term]\nid: GO:0000001\nname: live\nnamespace: biological_process\n")
+    rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+               "--tmin", "1", "--obo", str(d / "tiny.obo"), "-o", str(d / "out")])
+    assert rc == 0
+    assert "skipping propagation" in capsys.readouterr().err
+    res = pd.read_csv(d / "out" / "s_enrichment.tsv", sep="\t")
+    assert len(res) == 2 and set(res["term"]) == {"GO:9000001", "GO:9000002"}  # raw net used
+
+
+def test_drop_warning_lists_user_ids_and_gene_loss(tmp_path, capsys):
+    """The drop warning names the ids as they appear in the file, and reports
+    genes that lose all GO annotations."""
+    from qenrich._obo import GeneOntology
+
+    obo = ("[Term]\nid: GO:0000001\nname: live\nnamespace: biological_process\n")
+    go = GeneOntology.from_obo(wfile(tmp_path, "o.obo", obo))
+    net = pd.DataFrame({"source": ["GO:0000001", "GO:0000001", "GO:9000003"],
+                        "target": ["g1", "g2", "g4"]})  # g4 only via unknown term
+    out = go.propagate(net)
+    err = capsys.readouterr().err
+    assert "GO:9000003" in err  # the user's id, not a translated one
+    assert "1 gene(s) left with no GO annotation" in err
+    assert set(out["target"]) == {"g1", "g2"}  # g4 dropped from the universe
+
+
+def test_no_obo_and_obo_conflict_warns(tmp_path, capsys):
+    from qenrich._cli import main
+
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "net.tsv").write_text(NET)
+    (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
+    rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+               "--tmin", "1", "--no-obo", "--obo", str(d / "fake.obo"),
+               "-o", str(d / "out")])
+    assert rc == 0
+    assert "--no-obo wins" in capsys.readouterr().err
+
+
+def test_desc_missing_file_is_clean_error(tmp_path, capsys):
+    """A --desc that exists nowhere prints `error:`, not a traceback."""
+    from qenrich._cli import main
+
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "net.tsv").write_text(NET)
+    (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
+    rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+               "--tmin", "1", "--desc", "nowhere.tsv", "-o", str(d / "out")])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_obo_name_beats_desc_for_go_ids(tmp_path):
+    """English names for GO ids come from the OBO; --desc only fills the gaps."""
+    from qenrich._cli import main
+
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "net.tsv").write_text("source\ttarget\nGO:0006950\tg1\nGO:0006950\tg2\nGO:0006950\tg3\n")
+    (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
+    # deliberately wrong English name for a GO id the OBO covers
+    (d / "wrong.tsv").write_text("GO:0006950\tWRONG NAME\n")
+    rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+               "--tmin", "1", "--desc", str(d / "wrong.tsv"), "-o", str(d / "out")])
+    assert rc == 0
+    res = pd.read_csv(d / "out" / "s_enrichment.tsv", sep="\t")
+    assert res.iloc[0]["name"] == "response to stress"  # OBO wins
+
+
+def test_obsolete_alt_id_and_chain_redirect(tmp_path):
+    """alt_ids of retired terms and replaced_by chains resolve to the live term."""
+    from qenrich._obo import GeneOntology
+
+    obo = (
+        "[Term]\nid: GO:0000001\nname: live target\nnamespace: biological_process\n\n"
+        "[Term]\nid: GO:0000002\nname: retired mid\nnamespace: biological_process\n"
+        "is_obsolete: true\nreplaced_by: GO:0000001\nalt_id: GO:0000008\n\n"
+        "[Term]\nid: GO:0000003\nname: retired head\nnamespace: biological_process\n"
+        "is_obsolete: true\nreplaced_by: GO:0000002\n"
+    )
+    go = GeneOntology.from_obo(wfile(tmp_path, "c.obo", obo))
+    assert go._alt["GO:0000003"] == "GO:0000001"  # chain followed
+    assert go._alt["GO:0000008"] == "GO:0000001"  # alt_id of a retired term
+    net = pd.DataFrame({"source": ["GO:0000003", "GO:0000008"], "target": ["g1", "g2"]})
+    out = go.propagate(net)
+    assert set(zip(out["source"], out["target"])) == {("GO:0000001", "g1"), ("GO:0000001", "g2")}
