@@ -975,3 +975,74 @@ def test_labels_id_applies_to_heatmap(tmp_path, capsys):
         assert captured["label"] == "GO:0000001"  # id, not "stress"
     finally:
         _cli.plot_heatmap = orig
+
+
+# ================= plot label fixes: CJK width, layout, EN name default =================
+
+def test_disp_len_cjk():
+    """CJK chars count ~1.7x so figure width grows for Chinese labels."""
+    from qenrich._plot import _disp_len
+    from qenrich._plot_enrichplot import _disp_len as _dl2
+
+    assert _disp_len("abcd") == 4.0
+    assert _disp_len("对胁迫的响应") > 9.0
+    assert _dl2("abcd") == 4.0  # both modules share the rule
+
+
+def test_dotplot_axes_after_labels(tmp_path):
+    """layout='tight' must place the axes to the RIGHT of the y labels."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    import qenrich._plot_enrichplot as PE
+    from qenrich._plot import use_cjk_font
+
+    use_cjk_font()
+    d = pd.DataFrame({
+        "term": ["GO:1", "GO:2"], "Description": ["细胞周期检查点信号传导", "对胁迫的响应"],
+        "padj": [1e-4, 1e-3], "Count": [3, 2], "GeneRatio": [0.3, 0.2],
+    }).sort_values("GeneRatio", ascending=False).iloc[::-1]
+    cap = {}
+    orig = plt.Figure.savefig
+
+    def spy(self, path, **kw):
+        self.canvas.draw()
+        ax = self.axes[0]
+        r = self.canvas.get_renderer()
+        need = max(ax.get_window_extent().x0 - t.get_window_extent(r).x0
+                   for t in ax.get_yticklabels())
+        cap["ok"] = ax.get_window_extent().x0 - need >= 0
+        return orig(self, path, **kw)
+
+    plt.Figure.savefig = spy
+    try:
+        PE._dotplot(d, tmp_path / "p.png", "s", (6.5, 3.8))
+    finally:
+        plt.Figure.savefig = orig
+    assert cap["ok"]  # labels sit fully left of the axes
+
+
+def test_en_default_uses_go_zh_names(tmp_path, capsys, monkeypatch):
+    """Without --desc/--obo, plots default to English names from the shipped go_zh.tsv."""
+    from qenrich import _cli
+
+    cap = {}
+    orig_hm = _cli.plot_heatmap
+    _cli.plot_heatmap = lambda s, o, n: (cap.update(lab=n(s["term"].iloc[0])),
+                                         orig_hm(s, o, n))[1]
+    # run from the repo root so Path.cwd()/go_zh.tsv is found
+    monkeypatch.chdir("/sri/home/sri2025201067/qenrich/qenrich")
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "net.tsv").write_text("source\ttarget\nGO:0000001\tg1\nGO:0000001\tg2\nGO:0000001\tg3\n")
+    (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
+    try:
+        rc = _cli.main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+                        "--tmin", "1", "-o", str(d / "out"), "--plot"])
+        assert rc == 0
+        # GO:0000001's English name in go_zh.tsv is "mitochondrion inheritance"
+        assert cap["lab"] == "mitochondrion inheritance"
+        assert "go_zh.tsv for term names" in capsys.readouterr().out
+    finally:
+        _cli.plot_heatmap = orig_hm

@@ -80,6 +80,11 @@ def _size_map(counts: np.ndarray):
     return to_s, breaks
 
 
+def _disp_len(s: str) -> float:
+    """Display width in latin-char equivalents: CJK glyphs are ~1.7x wider."""
+    return sum(1.7 if ord(c) > 0x2E80 else 1.0 for c in s)
+
+
 def _prep(df: pd.DataFrame, stats: dict, name_of, top: int) -> pd.DataFrame:
     d = df.copy()
     d["Description"] = [name_of(t) or t for t in d["term"]] if name_of else d["term"]
@@ -103,7 +108,7 @@ def _dotplot(d: pd.DataFrame, path: Path, title: str, figsize=(6.0, 4.0)) -> Non
     cmap, _ = _sig_scale()
     norm = _padj_norm(d["padj"].to_numpy())
     to_s, size_breaks = _size_map(d["Count"].to_numpy())
-    fig, ax = plt.subplots(figsize=figsize, dpi=150)
+    fig, ax = plt.subplots(figsize=figsize, dpi=150, layout="tight")
     ax.scatter(
         d["GeneRatio"], d["Description"],
         s=to_s(d["Count"]),
@@ -144,7 +149,7 @@ def _barplot(d: pd.DataFrame, path: Path, title: str, figsize=(6.0, 4.0)) -> Non
     d = d.sort_values("Count", ascending=True)  # highest Count at top
     cmap, _ = _sig_scale()
     norm = _padj_norm(d["padj"].to_numpy())
-    fig, ax = plt.subplots(figsize=figsize, dpi=150)
+    fig, ax = plt.subplots(figsize=figsize, dpi=150, layout="tight")
     ax.barh(d["Description"], d["Count"], color=cmap(norm(d["padj"].to_numpy())), height=0.7)
     cbar = fig.colorbar(ScalarMappable(norm=norm, cmap=cmap), ax=ax, shrink=0.7, pad=0.06)
     cbar.set_label("p.adjust", size=int(FONT * 0.85))
@@ -178,7 +183,7 @@ def _heatplot(results_dfs: list[pd.DataFrame], path: Path, name_of, top_terms: i
     mat = mat[mat["gene"].isin(genes)]
     piv = mat.assign(v=1).pivot(index="gene", columns="term", values="v")
     col_labels = [_trunc(name_of(t) or t) if name_of else _trunc(t) for t in piv.columns]
-    fig, ax = plt.subplots(figsize=(1.0 + 0.16 * max(len(g) for g in piv.index) + 0.25 * len(col_labels),
+    fig, ax = plt.subplots(layout="tight", figsize=(1.0 + 0.16 * max(len(g) for g in piv.index) + 0.25 * len(col_labels),
                                     max(3.0, 0.26 * len(piv) + 1.0)), dpi=150)
     ax.scatter(
         np.repeat(np.arange(len(col_labels)), len(piv)),
@@ -213,8 +218,9 @@ def plot_results_enrichplot(
     for name, df in results.items():
         if not df.empty:
             prepped[name] = _prep(df, stats.get(name, {}), name_of, top)
-    lab_len = max((d["Description"].str.len().max() for d in prepped.values() if len(d)), default=0)
-    figsize = (max(5.5, 1.2 + 0.06 * lab_len), max(3.0, 0.28 * top + 1.0))
+    lab_len = max((max((_disp_len(s) for s in d["Description"]), default=0)
+                   for d in prepped.values() if len(d)), default=0)
+    figsize = (max(6.5, 3.0 + 0.11 * lab_len), max(3.0, 0.28 * top + 1.0))
     for name, d in prepped.items():
         fname = name.replace("/", "_")
         _dotplot(d, outdir / f"{fname}_{tag}_dotplot.png", name, figsize)

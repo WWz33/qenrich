@@ -140,13 +140,25 @@ def cmd_enrich(args) -> int:
         sets, numeric, net = strip_suffix(sets, numeric, net)
         print("[qenrich] stripped .N version suffixes from gene ids")
 
-    # name resolvers: English from --desc col 2 or --obo; Chinese from --desc col 3
+    # name resolvers: English from --desc col 2 or --obo; Chinese from --desc col 3.
+    # With no source given, the shipped go_zh.tsv (repo root) still supplies English
+    # GO names so plots default to names instead of bare ids.
     names_df = args._names_df
+    auto_names = False  # go_zh.tsv picked up implicitly: English only for plot labels
+    if names_df is None and (go is None) and args.labels == "name":
+        bundled = Path(__file__).resolve().parent.parent.parent / "go_zh.tsv"
+        alt = Path.cwd() / "go_zh.tsv"
+        for cand in (alt, bundled):
+            if cand.is_file():
+                names_df = read_names(cand)
+                auto_names = True
+                print(f"[qenrich] using {cand} for term names (--desc to override)")
+                break
     en_map, zh_map = {}, {}
     if names_df is not None:
         if names_df.shape[1] >= 2:
             en_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 1].fillna("")))
-        if names_df.shape[1] >= 3:
+        if not auto_names and names_df.shape[1] >= 3:
             zh_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 2].fillna("")))
 
     def en_of(term: str) -> str:
