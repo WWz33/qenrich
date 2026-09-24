@@ -104,7 +104,7 @@ def _select_columns(header, sets, numeric, spec):
 
 def _name_columns(df: pd.DataFrame, en_of, zh_of, no_zh: bool = False) -> pd.DataFrame:
     """Insert English ``name`` (always, when resolvable) and Chinese ``name_zh``
-    (unless ``no_zh`` / --no-name-zh) columns after ``term``."""
+    (when the caller supplied Chinese names, i.e. --zh / --desc col 3) after ``term``."""
     zhs = [zh_of(t) for t in df["term"]] if not no_zh else []
     ens = [en_of(t) for t in df["term"]]
     if not any(zhs) and not any(ens):
@@ -172,23 +172,22 @@ def cmd_enrich(args) -> int:
         print("[qenrich] stripped .N version suffixes from gene ids")
 
     # name resolvers. English: the OBO is authoritative for GO ids; --desc col 2
-    # fills the rest (KEGG, Pfam). Chinese: the bundled go_zh.tsv is on by default
-    # (--no-name-zh drops it); --desc col 3 extends or overrides it.
+    # fills the rest (KEGG, Pfam). Chinese only on request: --zh pulls in the
+    # bundled go_zh.tsv, --desc col 3 supplies or overrides entries.
     en_map: dict[str, str] = {}
     zh_map: dict[str, str] = {}
     names_df = args._names_df
     if names_df is not None and names_df.shape[1] >= 2:
         en_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 1].fillna("")))
-    if not getattr(args, "no_name_zh", False):
-        desc_path = getattr(args, "_desc_path", None)
-        desc_is_go_zh = bool(desc_path) and Path(desc_path).name.startswith("go_zh.tsv")
-        if not desc_is_go_zh:
-            zh_src = _bundled_go_zh()
-            if zh_src:
-                zdf = read_names(zh_src)
-                zh_map = dict(zip(zdf.iloc[:, 0], zdf.iloc[:, 2].fillna("")))
-        if names_df is not None and names_df.shape[1] >= 3:
-            zh_map.update(dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 2].fillna(""))))
+    if names_df is not None and names_df.shape[1] >= 3:
+        zh_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 2].fillna("")))
+    if getattr(args, "zh", False):
+        zh_src = _bundled_go_zh()
+        if zh_src:
+            zdf = read_names(zh_src)
+            bundled = dict(zip(zdf.iloc[:, 0], zdf.iloc[:, 2].fillna("")))
+            bundled.update(zh_map)  # an explicit --desc entry wins
+            zh_map = bundled
 
     def en_of(term: str) -> str:
         # the OBO is the authority for GO ids; --desc only fills the gaps (KEGG, Pfam)
@@ -213,7 +212,7 @@ def cmd_enrich(args) -> int:
                     f"annotation universe — check gene ID style (version suffixes? use --strip-suffix)",
                     file=sys.stderr,
                 )
-            d = _name_columns(df, en_of, zh_of, no_zh=args.no_name_zh)
+            d = _name_columns(df, en_of, zh_of)
             if d.empty:
                 print(f"[qenrich] set '{name}' ({tag}): no terms survived tmin={args.tmin}")
                 continue
@@ -343,8 +342,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="skip the OBO: no DAG propagation, term ids instead of names")
     ep.add_argument("--desc", help="extra id->names TSV (col 2 English, col 3 Chinese); "
                     "extends the built-in Chinese table for ids like KEGG/Pfam")
-    ep.add_argument("--no-name-zh", action="store_true",
-                    help="drop the Chinese names (column and plot labels); English stays")
+    ep.add_argument("--zh", action="store_true",
+                    help="add Chinese term names: a name_zh column and Chinese plot labels "
+                         "(from the bundled go_zh.tsv; a go_zh.tsv in the working directory wins)")
     ep.add_argument("--tmin", type=int, default=5, help="drop terms with fewer targets (default 5)")
     ep.add_argument("--bg", help="background gene list file (default: all annotated genes)")
     ep.add_argument("--padj", type=float, default=0.05,

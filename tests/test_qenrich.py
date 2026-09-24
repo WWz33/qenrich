@@ -445,8 +445,8 @@ def test_ora_empty_set(tmp_path):
     assert stats["empty"]["n_hit"] == 0
 
 
-# ---- review: CLI e2e with --desc + --no-name-zh + -c ----
-def test_cli_desc_no_name_zh_columns(tmp_path):
+# ---- review: CLI e2e with --desc + -c ----
+def test_cli_desc_supplies_both_name_columns(tmp_path):
     from qenrich._cli import main
     d = tmp_path / "run"
     d.mkdir()
@@ -455,12 +455,12 @@ def test_cli_desc_no_name_zh_columns(tmp_path):
     (d / "zh.tsv").write_text("GO:0000001\tstress\t应激\nGO:0000002\tbinding\t结合\n"
                               "GO:0000003\tgrandchild\t孙节点\n")
     rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"), "--tmin", "3",
-               "-c", "up", "--desc", str(d / "zh.tsv"), "--no-name-zh",
+               "-c", "up", "--desc", str(d / "zh.tsv"),
                "-o", str(d / "out")])
     assert rc == 0
     import csv
     hdr = next(csv.reader(open(d / "out" / "up_enrichment.tsv"), delimiter="\t"))
-    assert "name" in hdr and "name_zh" not in hdr  # no-name-zh drops Chinese
+    assert "name" in hdr and "name_zh" in hdr  # --desc col 3 brings Chinese
 
 
 # ---- round 2: OBO propagate alt_id ----
@@ -1043,14 +1043,13 @@ def test_en_default_uses_bundled_obo(tmp_path, capsys):
         out = capsys.readouterr().out
         assert "propagated GO DAG (bundled OBO" in out
         # label_of prefers Chinese: "response to stress" (OBO) + 对胁迫的响应 (built-in)
-        assert cap["lab"] == "对胁迫的响应"
+        assert cap["lab"] == "response to stress"  # default: English from the OBO
     finally:
         _cli.plot_heatmap = orig_hm
 
 
-def test_no_obo_with_no_name_zh_leaves_ids(tmp_path, capsys):
-    """--no-obo skips the DAG; the Chinese table still names terms, so only
-    --no-name-zh on top leaves bare ids."""
+def test_zh_flag_adds_chinese_labels(tmp_path, capsys):
+    """Chinese appears only on request: --zh pulls in the bundled table."""
     from qenrich import _cli
 
     cap = {}
@@ -1063,16 +1062,13 @@ def test_no_obo_with_no_name_zh_leaves_ids(tmp_path, capsys):
     (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
     try:
         rc = _cli.main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
-                        "--tmin", "1", "--no-obo", "-o", str(d / "out"), "--plot"])
+                        "--tmin", "1", "--zh", "-o", str(d / "out"), "--plot"])
         assert rc == 0
-        out = capsys.readouterr().out
-        assert "propagated GO DAG" not in out
-        assert cap["lab"] == "对胁迫的响应"  # Chinese table works without the OBO
-        rc = _cli.main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
-                        "--tmin", "1", "--no-obo", "--no-name-zh",
-                        "-o", str(d / "out2"), "--plot"])
-        assert rc == 0
-        assert cap["lab"] == "GO:0006950"  # both opt-outs: bare id
+        assert cap["lab"] == "对胁迫的响应"  # bundled go_zh.tsv
+        import csv
+        with open(d / "out" / "s_enrichment.tsv") as fh:
+            hdr = next(csv.reader(fh, delimiter="\t"))
+        assert hdr[:3] == ["term", "name", "name_zh"]
     finally:
         _cli.plot_heatmap = orig_hm
 
