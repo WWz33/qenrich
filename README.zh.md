@@ -72,7 +72,7 @@ Glyma.01G000200,1.8
 Glyma.01G000300,-0.5
 ```
 
-每个集合写入 `<set>_enrichment.tsv`（ORA）或 `<set>_gsea.tsv`（GSEA），合并为 `summary.tsv`。英文 `name` 来自 OBO；`--desc` 用于补充 OBO 未覆盖的 id（如 KEGG/Pfam）并提供中文列（`--no-name-zh` 去掉中文列）：
+每个集合写入 `<set>_enrichment.tsv`（ORA）或 `<set>_gsea.tsv`（GSEA），合并为 `summary.tsv`。英文 `name` 来自内置 OBO，`name_zh` 来自内置中文表，两者自动生效（`--no-name-zh` 去掉中文列）；`--desc` 用于补充两者都没有的 id（KEGG、Pfam、InterPro）：
 
 ```
 term          name                          name_zh          term_size  overlap  genes           pvalue    log_or  padj
@@ -91,11 +91,11 @@ GO:0048519    negative regulation of bio...  生物过程的负调控   17      
 
 ## 中文标签
 
-`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的 LLM 翻译，未经人工校对，引用前请核对。该文件在仓库根目录，包内也带一份（gzip 压缩），因此 `--desc go_zh.tsv` 在任何目录都能用；加上它即可得到中文标签：
+中文标签内置：每次运行自动带 `name_zh` 列，图上直接用中文标注。`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的 LLM 翻译，未经人工校对，引用前请核对。该文件在仓库根目录、包内也有一份（gzip 压缩），工作目录下的同名文件优先于包内副本；`--no-name-zh` 切换为纯英文。`--desc` 可把名称表扩展到其他 id 空间（KEGG、Pfam）或覆盖个别条目：
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \
-        --desc go_zh.tsv --plot --style enrichplot
+        --plot --style enrichplot          # 中文标签，无需任何参数
 ```
 
 <img src="data/png/enrichplot_zh.png" width="500" alt="中文点图">

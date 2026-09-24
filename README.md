@@ -72,7 +72,7 @@ Glyma.01G000200,1.8
 Glyma.01G000300,-0.5
 ```
 
-Each set is written to `<set>_enrichment.tsv` (ORA) or `<set>_gsea.tsv` (GSEA) and merged into `summary.tsv`, ordered by `padj`. The English `name` comes from the OBO; `--desc` adds names for ids the OBO does not cover and the Chinese column (`--no-name-zh` drops the Chinese one):
+Each set is written to `<set>_enrichment.tsv` (ORA) or `<set>_gsea.tsv` (GSEA) and merged into `summary.tsv`, ordered by `padj`. English `name` comes from the bundled OBO and `name_zh` from the built-in Chinese table — both automatic (`--no-name-zh` drops the Chinese column); `--desc` adds names for ids neither covers (KEGG, Pfam, InterPro):
 
 ```
 term          name                          name_zh          term_size  overlap  genes           pvalue    log_or  padj
@@ -91,11 +91,11 @@ Labels follow `--labels {name,id}` (default `name`).
 
 ## Chinese labels
 
-`go_zh.tsv` (38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root and (gzipped) inside the package, so `--desc go_zh.tsv` works from any directory; pass it to add Chinese labels:
+Built in: every run carries a `name_zh` column and plots label terms in Chinese. The table (`go_zh.tsv`, 38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root and (gzipped) inside the package; a `go_zh.tsv` in the working directory wins over the packaged copy, and `--no-name-zh` gives you English-only output. `--desc` extends the table to other id spaces (KEGG, Pfam) or overrides entries:
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \
-        --desc go_zh.tsv --plot --style enrichplot
+        --plot --style enrichplot          # Chinese labels, no flags needed
 ```
 
 <img src="data/png/enrichplot_zh.png" width="500" alt="Chinese dotplot">

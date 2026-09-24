@@ -1042,14 +1042,15 @@ def test_en_default_uses_bundled_obo(tmp_path, capsys):
         assert rc == 0
         out = capsys.readouterr().out
         assert "propagated GO DAG (bundled OBO" in out
-        assert cap["lab"] == "response to stress"  # GO:0006950, from the OBO
+        # label_of prefers Chinese: "response to stress" (OBO) + 对胁迫的响应 (built-in)
+        assert cap["lab"] == "对胁迫的响应"
     finally:
         _cli.plot_heatmap = orig_hm
 
 
-def test_no_obo_leaves_ids_as_labels(tmp_path, capsys):
-    """--no-obo means no ontology: no propagation and no term names, just ids.
-    go_zh.tsv is never picked up implicitly (--desc is the only way in)."""
+def test_no_obo_with_no_name_zh_leaves_ids(tmp_path, capsys):
+    """--no-obo skips the DAG; the Chinese table still names terms, so only
+    --no-name-zh on top leaves bare ids."""
     from qenrich import _cli
 
     cap = {}
@@ -1066,8 +1067,12 @@ def test_no_obo_leaves_ids_as_labels(tmp_path, capsys):
         assert rc == 0
         out = capsys.readouterr().out
         assert "propagated GO DAG" not in out
-        assert "go_zh.tsv" not in out  # no implicit name source
-        assert cap["lab"] == "GO:0006950"  # bare id
+        assert cap["lab"] == "对胁迫的响应"  # Chinese table works without the OBO
+        rc = _cli.main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+                        "--tmin", "1", "--no-obo", "--no-name-zh",
+                        "-o", str(d / "out2"), "--plot"])
+        assert rc == 0
+        assert cap["lab"] == "GO:0006950"  # both opt-outs: bare id
     finally:
         _cli.plot_heatmap = orig_hm
 

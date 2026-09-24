@@ -171,16 +171,24 @@ def cmd_enrich(args) -> int:
         sets, numeric, net = strip_suffix(sets, numeric, net)
         print("[qenrich] stripped .N version suffixes from gene ids")
 
-    # name resolvers: English comes from the OBO (bundled unless --no-obo);
-    # --desc only adds names for ids the OBO does not cover (KEGG, Pfam) and the
-    # Chinese column. go_zh.tsv is never picked up implicitly.
+    # name resolvers. English: the OBO is authoritative for GO ids; --desc col 2
+    # fills the rest (KEGG, Pfam). Chinese: the bundled go_zh.tsv is on by default
+    # (--no-name-zh drops it); --desc col 3 extends or overrides it.
+    en_map: dict[str, str] = {}
+    zh_map: dict[str, str] = {}
     names_df = args._names_df
-    en_map, zh_map = {}, {}
-    if names_df is not None:
-        if names_df.shape[1] >= 2:
-            en_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 1].fillna("")))
-        if names_df.shape[1] >= 3:
-            zh_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 2].fillna("")))
+    if names_df is not None and names_df.shape[1] >= 2:
+        en_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 1].fillna("")))
+    if not getattr(args, "no_name_zh", False):
+        desc_path = getattr(args, "_desc_path", None)
+        desc_is_go_zh = bool(desc_path) and Path(desc_path).name.startswith("go_zh.tsv")
+        if not desc_is_go_zh:
+            zh_src = _bundled_go_zh()
+            if zh_src:
+                zdf = read_names(zh_src)
+                zh_map = dict(zip(zdf.iloc[:, 0], zdf.iloc[:, 2].fillna("")))
+        if names_df is not None and names_df.shape[1] >= 3:
+            zh_map.update(dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 2].fillna(""))))
 
     def en_of(term: str) -> str:
         # the OBO is the authority for GO ids; --desc only fills the gaps (KEGG, Pfam)
@@ -286,6 +294,18 @@ def cmd_parse(args) -> int:
     return 0
 
 
+def _bundled_go_zh() -> str | None:
+    """The Chinese name table: cwd copy, repo-root copy, then the packaged one."""
+    here = Path(__file__).resolve().parent
+    root = here.parent.parent
+    for cand in (Path.cwd() / "go_zh.tsv",
+                 root / "go_zh.tsv",
+                 here / "data" / "go_zh.tsv.gz"):
+        if cand.is_file():
+            return str(cand)
+    return None
+
+
 def _resolve_desc(path: str) -> str:
     """--desc given by bare name (e.g. go_zh.tsv): fall back to the packaged copy."""
     p = Path(path)
@@ -321,9 +341,10 @@ def main(argv: list[str] | None = None) -> int:
                     "(default: the go-basic.obo bundled in data/)")
     ep.add_argument("--no-obo", action="store_true",
                     help="skip the OBO: no DAG propagation, term ids instead of names")
-    ep.add_argument("--desc", help="id->names TSV: col 2 English, col 3 Chinese "
-                    "(e.g. go_zh.tsv); supplements names the OBO lacks")
-    ep.add_argument("--no-name-zh", action="store_true", help="omit the Chinese name column from output (English name stays)")
+    ep.add_argument("--desc", help="extra id->names TSV (col 2 English, col 3 Chinese); "
+                    "extends the built-in Chinese table for ids like KEGG/Pfam")
+    ep.add_argument("--no-name-zh", action="store_true",
+                    help="drop the Chinese names (column and plot labels); English stays")
     ep.add_argument("--tmin", type=int, default=5, help="drop terms with fewer targets (default 5)")
     ep.add_argument("--bg", help="background gene list file (default: all annotated genes)")
     ep.add_argument("--padj", type=float, default=0.05,
@@ -336,7 +357,8 @@ def main(argv: list[str] | None = None) -> int:
     ep.add_argument("--format", choices=FORMATS, help="force input format")
     ep.add_argument("--no-header", action="store_true", help="gene list has no header row")
     ep.add_argument("--labels", choices=["name", "id"], default="name",
-                    help="plot label style: English term name (default; from --obo/--desc, else term id) or bare term id")
+                    help="plot label style: term name (Chinese when available, else English) "
+                         "or bare term id")
     ep.add_argument("--plot", action="store_true", help="write barplot/dotplot/heatmap PNGs")
     ep.add_argument("--style", choices=["matplotlib", "enrichplot"], default="matplotlib",
                     help="plot style: dc.pl matplotlib (default) or enrichplot (GeneRatio dotplot, Count barplot, heatplot)")
@@ -347,7 +369,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd is None and (not args.i or not args.genelist):
         ap.error("enrichment requires -i INPUT and --genelist FILE (or use the 'parse' subcommand)")
     try:
-        args._names_df = read_names(_resolve_desc(args.desc)) if getattr(args, "desc", None) else None
+        args._desc_path = _resolve_desc(args.desc) if getattr(args, "desc", None) else None
+        args._names_df = read_names(args._desc_path) if args._desc_path else None
         return args.func(args)
     except (ValueError, KeyError, FileNotFoundError, AssertionError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
