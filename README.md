@@ -40,7 +40,7 @@ qenrich -i emapper.annotations.tsv --genelist gene_list.txt --no-obo
 
 # collapse parents with significant children; name KEGG/Pfam; strip .N suffixes
 qenrich -i go --genelist gene_list.txt --drop-parents \
-        --desc ko_ids.txt --strip-suffix
+        --zh ko_ids.txt --strip-suffix
 
 # eggNOG: one annotation level
 qenrich -i emapper.annotations.tsv --eggnog-lvl 2759 --genelist gene_list.txt
@@ -72,7 +72,7 @@ Glyma.01G000200,1.8
 Glyma.01G000300,-0.5
 ```
 
-Each set is written to `<set>_enrichment.tsv` (ORA) or `<set>_gsea.tsv` (GSEA) and merged into `summary.tsv`, ordered by `padj`. English `name` comes from the bundled OBO. Chinese appears only on request: `--zh` adds a `name_zh` column and Chinese plot labels, `--desc` adds names for ids the OBO does not cover (KEGG, Pfam, InterPro):
+Each set is written to `<set>_enrichment.tsv` (ORA) or `<set>_gsea.tsv` (GSEA) and merged into `summary.tsv`, ordered by `padj`. English `name` comes from the bundled OBO. Chinese appears only on request: `--zh` adds a `name_zh` column and Chinese plot labels; `--zh table.tsv` merges a custom table (col 2 English, col 3 Chinese) for ids the OBO does not cover (KEGG, Pfam, InterPro) or overrides entries:
 
 ```
 term          name                          name_zh          term_size  overlap  genes           pvalue    log_or  padj
@@ -91,7 +91,7 @@ Labels follow `--labels {name,id}` (default `name`).
 
 ## Chinese labels
 
-Opt-in via `--zh`: it adds a `name_zh` column and switches plot labels to Chinese. The table (`go_zh.tsv`, 38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root and (gzipped) inside the package; a `go_zh.tsv` in the working directory wins over the packaged copy. `--desc` extends the table to other id spaces (KEGG, Pfam) or overrides entries:
+Opt-in via `--zh`: it adds a `name_zh` column and switches plot labels to Chinese. The table (`go_zh.tsv`, 38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root and (gzipped) inside the package; a `go_zh.tsv` in the working directory wins over the packaged copy. `--zh table.tsv` extends it to other id spaces (KEGG, Pfam) or overrides entries:
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \

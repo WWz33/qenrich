@@ -445,7 +445,7 @@ def test_ora_empty_set(tmp_path):
     assert stats["empty"]["n_hit"] == 0
 
 
-# ---- review: CLI e2e with --desc + -c ----
+# ---- review: CLI e2e with --zh + -c ----
 def test_cli_desc_supplies_both_name_columns(tmp_path):
     from qenrich._cli import main
     d = tmp_path / "run"
@@ -455,12 +455,12 @@ def test_cli_desc_supplies_both_name_columns(tmp_path):
     (d / "zh.tsv").write_text("GO:0000001\tstress\t应激\nGO:0000002\tbinding\t结合\n"
                               "GO:0000003\tgrandchild\t孙节点\n")
     rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"), "--tmin", "3",
-               "-c", "up", "--desc", str(d / "zh.tsv"),
+               "-c", "up", "--zh", str(d / "zh.tsv"),
                "-o", str(d / "out")])
     assert rc == 0
     import csv
     hdr = next(csv.reader(open(d / "out" / "up_enrichment.tsv"), delimiter="\t"))
-    assert "name" in hdr and "name_zh" in hdr  # --desc col 3 brings Chinese
+    assert "name" in hdr and "name_zh" in hdr  # --zh table col 3 brings Chinese
 
 
 # ---- round 2: OBO propagate alt_id ----
@@ -899,7 +899,7 @@ def test_leading_edge_matches_decoupler_esrank():
 # ================= round-2 review fixes =================
 
 def test_read_names_header_row_skipped(tmp_path):
-    """A --desc file with a header row must not inject bogus name mappings."""
+    """A --zh table with a header row must not inject bogus name mappings."""
     from qenrich._io import read_names
 
     text = "id\tname\tzh\nGO:0000001\tstress\t应激\nGO:0000002\tbinding\t结合\n"
@@ -969,7 +969,7 @@ def test_labels_id_applies_to_heatmap(tmp_path, capsys):
         (d / "gl.txt").write_text("up\nGene01\nGene02\nGene03\n")
         (d / "desc.tsv").write_text("GO:0000001\tstress\t应激\n")
         rc = _cli.main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
-                        "--tmin", "1", "--desc", str(d / "desc.tsv"),
+                        "--tmin", "1", "--zh", str(d / "desc.tsv"),
                         "--labels", "id", "-o", str(d / "out"), "--plot"])
         assert rc == 0
         assert captured["label"] == "GO:0000001"  # id, not "stress"
@@ -1073,18 +1073,18 @@ def test_zh_flag_adds_chinese_labels(tmp_path, capsys):
         _cli.plot_heatmap = orig_hm
 
 
-def test_desc_go_zh_resolves_to_packaged_copy(tmp_path, monkeypatch):
-    """`--desc go_zh.tsv` works without a git checkout: the packaged copy is used."""
+def test_zh_table_resolves_to_packaged_copy(tmp_path, monkeypatch):
+    """`--zh go_zh.tsv` works without a git checkout: the packaged copy is used."""
     from qenrich import _cli
 
     monkeypatch.chdir(tmp_path)  # no go_zh.tsv here
-    assert _cli._resolve_desc("go_zh.tsv").endswith("go_zh.tsv.gz")
-    df = _cli.read_names(_cli._resolve_desc("go_zh.tsv"))
+    assert _cli._resolve_table("go_zh.tsv").endswith("go_zh.tsv.gz")
+    df = _cli.read_names(_cli._resolve_table("go_zh.tsv"))
     assert df.shape[1] == 3 and len(df) > 30000  # id, english, chinese
 
 
-def test_desc_gives_chinese_and_english(tmp_path):
-    """--desc supplies the Chinese column and names for ids the OBO lacks (KEGG)."""
+def test_zh_table_gives_chinese_and_english(tmp_path):
+    """--zh TABLE supplies the Chinese column and names for ids the OBO lacks (KEGG)."""
     from qenrich._cli import main
 
     d = tmp_path / "run"
@@ -1093,7 +1093,7 @@ def test_desc_gives_chinese_and_english(tmp_path):
     (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
     (d / "ko.tsv").write_text("K00001\tpyruvate kinase\t丙酮酸激酶\n")
     rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
-               "--tmin", "1", "--desc", str(d / "ko.tsv"), "-o", str(d / "out")])
+               "--tmin", "1", "--zh", str(d / "ko.tsv"), "-o", str(d / "out")])
     assert rc == 0
     import csv
     with open(d / "out" / "s_enrichment.tsv") as fh:
@@ -1197,8 +1197,8 @@ def test_no_obo_and_obo_conflict_warns(tmp_path, capsys):
     assert "--no-obo wins" in capsys.readouterr().err
 
 
-def test_desc_missing_file_is_clean_error(tmp_path, capsys):
-    """A --desc that exists nowhere prints `error:`, not a traceback."""
+def test_zh_missing_file_is_clean_error(tmp_path, capsys):
+    """A --zh table that exists nowhere prints `error:`, not a traceback."""
     from qenrich._cli import main
 
     d = tmp_path / "run"
@@ -1206,13 +1206,13 @@ def test_desc_missing_file_is_clean_error(tmp_path, capsys):
     (d / "net.tsv").write_text(NET)
     (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
     rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
-               "--tmin", "1", "--desc", "nowhere.tsv", "-o", str(d / "out")])
+               "--tmin", "1", "--zh", "nowhere.tsv", "-o", str(d / "out")])
     assert rc == 1
     assert "error:" in capsys.readouterr().err
 
 
 def test_obo_name_beats_desc_for_go_ids(tmp_path):
-    """English names for GO ids come from the OBO; --desc only fills the gaps."""
+    """English names for GO ids come from the OBO; the --zh table only fills the gaps."""
     from qenrich._cli import main
 
     d = tmp_path / "run"
@@ -1222,7 +1222,7 @@ def test_obo_name_beats_desc_for_go_ids(tmp_path):
     # deliberately wrong English name for a GO id the OBO covers
     (d / "wrong.tsv").write_text("GO:0006950\tWRONG NAME\n")
     rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
-               "--tmin", "1", "--desc", str(d / "wrong.tsv"), "-o", str(d / "out")])
+               "--tmin", "1", "--zh", str(d / "wrong.tsv"), "-o", str(d / "out")])
     assert rc == 0
     res = pd.read_csv(d / "out" / "s_enrichment.tsv", sep="\t")
     assert res.iloc[0]["name"] == "response to stress"  # OBO wins

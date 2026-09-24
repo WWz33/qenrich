@@ -104,7 +104,7 @@ def _select_columns(header, sets, numeric, spec):
 
 def _name_columns(df: pd.DataFrame, en_of, zh_of, no_zh: bool = False) -> pd.DataFrame:
     """Insert English ``name`` (always, when resolvable) and Chinese ``name_zh``
-    (when the caller supplied Chinese names, i.e. --zh / --desc col 3) after ``term``."""
+    (when the caller supplied Chinese names via --zh) after ``term``."""
     zhs = [zh_of(t) for t in df["term"]] if not no_zh else []
     ens = [en_of(t) for t in df["term"]]
     if not any(zhs) and not any(ens):
@@ -171,9 +171,10 @@ def cmd_enrich(args) -> int:
         sets, numeric, net = strip_suffix(sets, numeric, net)
         print("[qenrich] stripped .N version suffixes from gene ids")
 
-    # name resolvers. English: the OBO is authoritative for GO ids; --desc col 2
-    # fills the rest (KEGG, Pfam). Chinese only on request: --zh pulls in the
-    # bundled go_zh.tsv, --desc col 3 supplies or overrides entries.
+    # name resolvers. English: the OBO is authoritative for GO ids; the --zh
+    # table's col 2 fills the rest (KEGG, Pfam). Chinese only on request: --zh
+    # pulls in the bundled go-zh table, and a --zh TABLE's col 3 extends or
+    # overrides it.
     en_map: dict[str, str] = {}
     zh_map: dict[str, str] = {}
     names_df = args._names_df
@@ -181,16 +182,16 @@ def cmd_enrich(args) -> int:
         en_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 1].fillna("")))
     if names_df is not None and names_df.shape[1] >= 3:
         zh_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 2].fillna("")))
-    if getattr(args, "zh", False):
-        zh_src = _bundled_go_zh()
-        if zh_src:
-            zdf = read_names(zh_src)
-            bundled = dict(zip(zdf.iloc[:, 0], zdf.iloc[:, 2].fillna("")))
-            bundled.update(zh_map)  # an explicit --desc entry wins
-            zh_map = bundled
+    zh_src = getattr(args, "_zh_path", None)
+    bundled = _bundled_go_zh() if getattr(args, "zh", None) else None
+    if bundled and (not zh_src or Path(zh_src).resolve() != Path(bundled).resolve()):
+        zdf = read_names(bundled)
+        base = dict(zip(zdf.iloc[:, 0], zdf.iloc[:, 2].fillna("")))
+        base.update(zh_map)  # the user's table wins over the bundled one
+        zh_map = base
 
     def en_of(term: str) -> str:
-        # the OBO is the authority for GO ids; --desc only fills the gaps (KEGG, Pfam)
+        # the OBO is the authority for GO ids; the --zh table fills the gaps (KEGG, Pfam)
         return (go.name(term) if go else "") or en_map.get(term) or ""
 
     def zh_of(term: str) -> str:
@@ -305,15 +306,15 @@ def _bundled_go_zh() -> str | None:
     return None
 
 
-def _resolve_desc(path: str) -> str:
-    """--desc given by bare name (e.g. go_zh.tsv): fall back to the packaged copy."""
+def _resolve_table(path: str) -> str:
+    """--zh given by bare name (e.g. go_zh.tsv): fall back to the packaged copy."""
     p = Path(path)
     if p.is_file():
         return str(p)
     data = Path(__file__).resolve().parent / "data"
     for cand in (data / f"{p.name}.gz", data / p.name):
         if cand.is_file():
-            print(f"[qenrich] --desc {path}: using packaged {cand.name}")
+            print(f"[qenrich] --zh {path}: using packaged {cand.name}")
             return str(cand)
     return str(p)  # missing everywhere: read_names reports it
 
@@ -340,11 +341,10 @@ def main(argv: list[str] | None = None) -> int:
                     "(default: the go-basic.obo bundled in data/)")
     ep.add_argument("--no-obo", action="store_true",
                     help="skip the OBO: no DAG propagation, term ids instead of names")
-    ep.add_argument("--desc", help="extra id->names TSV (col 2 English, col 3 Chinese); "
-                    "extends the built-in Chinese table for ids like KEGG/Pfam")
-    ep.add_argument("--zh", action="store_true",
-                    help="add Chinese term names: a name_zh column and Chinese plot labels "
-                         "(from the bundled go_zh.tsv; a go_zh.tsv in the working directory wins)")
+    ep.add_argument("--zh", nargs="?", const="go_zh.tsv", default=None, metavar="TABLE",
+                    help="add Chinese names: a name_zh column and Chinese plot labels from the "
+                         "bundled go-zh table; give a TSV (col 2 English, col 3 Chinese) to merge "
+                         "a custom table for other id spaces (KEGG, Pfam) or override entries")
     ep.add_argument("--tmin", type=int, default=5, help="drop terms with fewer targets (default 5)")
     ep.add_argument("--bg", help="background gene list file (default: all annotated genes)")
     ep.add_argument("--padj", type=float, default=0.05,
@@ -369,8 +369,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd is None and (not args.i or not args.genelist):
         ap.error("enrichment requires -i INPUT and --genelist FILE (or use the 'parse' subcommand)")
     try:
-        args._desc_path = _resolve_desc(args.desc) if getattr(args, "desc", None) else None
-        args._names_df = read_names(args._desc_path) if args._desc_path else None
+        args._zh_path = _resolve_table(args.zh) if getattr(args, "zh", None) else None
+        args._names_df = read_names(args._zh_path) if args._zh_path else None
         return args.func(args)
     except (ValueError, KeyError, FileNotFoundError, AssertionError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)

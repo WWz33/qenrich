@@ -40,7 +40,7 @@ qenrich -i emapper.annotations.tsv --genelist gene_list.txt --no-obo
 
 # 折叠有显著子节点的父节点；给 KEGG/Pfam 补名；去 .N 后缀
 qenrich -i go --genelist gene_list.txt --drop-parents \
-        --desc ko_ids.txt --strip-suffix
+        --zh ko_ids.txt --strip-suffix
 
 # eggNOG：只保留一个注释层级
 qenrich -i emapper.annotations.tsv --eggnog-lvl 2759 --genelist gene_list.txt
@@ -72,7 +72,7 @@ Glyma.01G000200,1.8
 Glyma.01G000300,-0.5
 ```
 
-每个集合写入 `<set>_enrichment.tsv`（ORA）或 `<set>_gsea.tsv`（GSEA），合并为 `summary.tsv`。英文 `name` 来自内置 OBO；中文只在显式要求时出现——`--zh` 加 `name_zh` 列并把图上标签切换为中文，`--desc` 补充 OBO 没有的 id（KEGG、Pfam、InterPro）：
+每个集合写入 `<set>_enrichment.tsv`（ORA）或 `<set>_gsea.tsv`（GSEA），合并为 `summary.tsv`。英文 `name` 来自内置 OBO。中文只在显式要求时出现：`--zh` 加 `name_zh` 列并把图上标签切换为中文；`--zh 表格.tsv` 合并自定义表（第 2 列英文、第 3 列中文），覆盖 OBO 没有的 id（KEGG、Pfam、InterPro）或个别条目：
 
 ```
 term          name                          name_zh          term_size  overlap  genes           pvalue    log_or  padj
@@ -91,7 +91,7 @@ GO:0048519    negative regulation of bio...  生物过程的负调控   17      
 
 ## 中文标签
 
-中文为可选功能，加 `--zh` 即可：输出多一列 `name_zh`，图上标签切换为中文。`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的 LLM 翻译，未经人工校对，引用前请核对。该文件在仓库根目录、包内也有一份（gzip 压缩），工作目录下的同名文件优先于包内副本。`--desc` 可把名称表扩展到其他 id 空间（KEGG、Pfam）或覆盖个别条目：
+中文为可选功能，加 `--zh` 即可：输出多一列 `name_zh`，图上标签切换为中文。`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的 LLM 翻译，未经人工校对，引用前请核对。该文件在仓库根目录、包内也有一份（gzip 压缩），工作目录下的同名文件优先于包内副本。`--zh 表格.tsv` 可把名称表扩展到其他 id 空间（KEGG、Pfam）或覆盖个别条目：
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \
