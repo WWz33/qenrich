@@ -1047,15 +1047,17 @@ def test_en_default_uses_bundled_obo(tmp_path, capsys):
         _cli.plot_heatmap = orig_hm
 
 
-def test_no_obo_and_go_zh_fallback(tmp_path, capsys, monkeypatch):
-    """--no-obo skips the DAG; names then fall back to the shipped go_zh.tsv."""
+def test_no_obo_leaves_ids_as_labels(tmp_path, capsys, monkeypatch):
+    """--no-obo means no ontology: no propagation and no term names, just ids.
+    go_zh.tsv is never picked up implicitly (--desc is the only way in)."""
     from qenrich import _cli
 
     cap = {}
     orig_hm = _cli.plot_heatmap
     _cli.plot_heatmap = lambda s, o, n: (cap.update(lab=n(s["term"].iloc[0])),
                                          orig_hm(s, o, n))[1]
-    monkeypatch.chdir("/sri/home/sri2025201067/qenrich/qenrich")  # Path.cwd()/go_zh.tsv
+    # even from the repo root, where go_zh.tsv sits, it must not be auto-loaded
+    monkeypatch.chdir("/sri/home/sri2025201067/qenrich/qenrich")
     d = tmp_path / "run"
     d.mkdir()
     (d / "net.tsv").write_text("source\ttarget\nGO:0006950\tg1\nGO:0006950\tg2\nGO:0006950\tg3\n")
@@ -1066,10 +1068,39 @@ def test_no_obo_and_go_zh_fallback(tmp_path, capsys, monkeypatch):
         assert rc == 0
         out = capsys.readouterr().out
         assert "propagated GO DAG" not in out
-        assert "go_zh.tsv for term names" in out
-        assert cap["lab"] == "response to stress"  # same name, from go_zh.tsv col 2
+        assert "go_zh.tsv" not in out  # no implicit name source
+        assert cap["lab"] == "GO:0006950"  # bare id
     finally:
         _cli.plot_heatmap = orig_hm
+
+
+def test_desc_go_zh_resolves_to_packaged_copy(tmp_path, monkeypatch):
+    """`--desc go_zh.tsv` works without a git checkout: the packaged copy is used."""
+    from qenrich import _cli
+
+    monkeypatch.chdir(tmp_path)  # no go_zh.tsv here
+    assert _cli._resolve_desc("go_zh.tsv").endswith("go_zh.tsv.gz")
+    df = _cli.read_names(_cli._resolve_desc("go_zh.tsv"))
+    assert df.shape[1] == 3 and len(df) > 30000  # id, english, chinese
+
+
+def test_desc_gives_chinese_and_english(tmp_path):
+    """--desc supplies the Chinese column and names for ids the OBO lacks (KEGG)."""
+    from qenrich._cli import main
+
+    d = tmp_path / "run"
+    d.mkdir()
+    (d / "net.tsv").write_text("source\ttarget\nK00001\tg1\nK00001\tg2\nK00001\tg3\n")
+    (d / "gl.txt").write_text("s\ng1\ng2\ng3\n")
+    (d / "ko.tsv").write_text("K00001\tpyruvate kinase\t丙酮酸激酶\n")
+    rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
+               "--tmin", "1", "--desc", str(d / "ko.tsv"), "-o", str(d / "out")])
+    assert rc == 0
+    import csv
+    with open(d / "out" / "s_enrichment.tsv") as fh:
+        rows = list(csv.reader(fh, delimiter="\t"))
+    assert rows[0][:3] == ["term", "name", "name_zh"]
+    assert rows[1][:3] == ["K00001", "pyruvate kinase", "丙酮酸激酶"]
 
 
 # ================= bundled OBO: default on, obsolete-term redirection =================

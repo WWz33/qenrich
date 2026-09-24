@@ -35,7 +35,7 @@ qenrich -i emapper.annotations.tsv --genelist gene_list.txt
 # use a different/newer OBO release
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt --obo go-basic.obo
 
-# skip propagation (raw annotations only)
+# skip propagation (raw annotations, ids instead of names)
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt --no-obo
 
 # collapse parents with significant children; name KEGG/Pfam; strip .N suffixes
@@ -72,7 +72,7 @@ Glyma.01G000200,1.8
 Glyma.01G000300,-0.5
 ```
 
-Each set is written to `<set>_enrichment.tsv` (ORA) or `<set>_gsea.tsv` (GSEA) and merged into `summary.tsv`, ordered by `padj`. With `--desc go_zh.tsv` the output carries English and Chinese name columns (`--no-name-zh` drops the Chinese one):
+Each set is written to `<set>_enrichment.tsv` (ORA) or `<set>_gsea.tsv` (GSEA) and merged into `summary.tsv`, ordered by `padj`. The English `name` comes from the OBO; `--desc` adds names for ids the OBO does not cover and the Chinese column (`--no-name-zh` drops the Chinese one):
 
 ```
 term          name                          name_zh          term_size  overlap  genes           pvalue    log_or  padj
@@ -91,7 +91,7 @@ Labels follow `--labels {name,id}` (default `name`).
 
 ## Chinese labels
 
-`go_zh.tsv` (38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root and (gzipped) inside the package; pass it with `--desc`:
+`go_zh.tsv` (38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root and (gzipped) inside the package, so `--desc go_zh.tsv` works from any directory; pass it to add Chinese labels:
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \

@@ -155,7 +155,10 @@ def cmd_enrich(args) -> int:
                 print(f"[qenrich] propagated GO DAG ({src} OBO: {Path(obo_path).name}): "
                       f"{net['source'].nunique()} terms, {net['target'].nunique()} genes")
         else:
-            print("[qenrich] warning: --obo needs a go net, ignoring", file=sys.stderr)
+            # only the user's explicit request is worth a warning; the bundled
+            # default silently steps aside for non-GO features
+            if args.obo:
+                print("[qenrich] warning: --obo needs a go net, ignoring", file=sys.stderr)
 
     header, sets, numeric = read_genelist(args.genelist, no_header=args.no_header)
     sets, numeric = _select_columns(header, sets, numeric, getattr(args, "columns", None))
@@ -163,25 +166,15 @@ def cmd_enrich(args) -> int:
         sets, numeric, net = strip_suffix(sets, numeric, net)
         print("[qenrich] stripped .N version suffixes from gene ids")
 
-    # name resolvers: English from --desc col 2 or --obo; Chinese from --desc col 3.
-    # With no source given, the shipped go_zh.tsv (repo root, or the copy inside the
-    # package) supplies English GO names so plots default to names, not bare ids.
+    # name resolvers: English comes from the OBO (bundled unless --no-obo);
+    # --desc only adds names for ids the OBO does not cover (KEGG, Pfam) and the
+    # Chinese column. go_zh.tsv is never picked up implicitly.
     names_df = args._names_df
-    auto_names = False  # go_zh.tsv picked up implicitly: English only for plot labels
-    if names_df is None and (go is None) and args.labels == "name":
-        here = Path(__file__).resolve().parent
-        for cand in (Path.cwd() / "go_zh.tsv", here.parent.parent / "go_zh.tsv",
-                     here / "data" / "go_zh.tsv.gz"):
-            if cand.is_file():
-                names_df = read_names(cand)
-                auto_names = True
-                print(f"[qenrich] using {cand} for term names (--desc to override)")
-                break
     en_map, zh_map = {}, {}
     if names_df is not None:
         if names_df.shape[1] >= 2:
             en_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 1].fillna("")))
-        if not auto_names and names_df.shape[1] >= 3:
+        if names_df.shape[1] >= 3:
             zh_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 2].fillna("")))
 
     def en_of(term: str) -> str:
@@ -287,6 +280,19 @@ def cmd_parse(args) -> int:
     return 0
 
 
+def _resolve_desc(path: str) -> str:
+    """--desc given by bare name (e.g. go_zh.tsv): fall back to the packaged copy."""
+    p = Path(path)
+    if p.is_file():
+        return str(p)
+    data = Path(__file__).resolve().parent / "data"
+    for cand in (data / f"{p.name}.gz", data / p.name):
+        if cand.is_file():
+            print(f"[qenrich] --desc {path}: using packaged {cand.name}")
+            return str(cand)
+    return str(p)  # missing everywhere: read_names reports it
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="qenrich", description=__doc__)
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
@@ -308,8 +314,9 @@ def main(argv: list[str] | None = None) -> int:
     ep.add_argument("--obo", help="go-basic.obo: propagate parents + term names "
                     "(default: the go-basic.obo bundled in data/)")
     ep.add_argument("--no-obo", action="store_true",
-                    help="do not propagate the GO DAG (skip the bundled OBO)")
-    ep.add_argument("--desc", help="id->names TSV; col 2 = English name, col 3 = Chinese name (e.g. go_zh.tsv)")
+                    help="skip the OBO: no DAG propagation, term ids instead of names")
+    ep.add_argument("--desc", help="id->names TSV: col 2 English, col 3 Chinese "
+                    "(e.g. go_zh.tsv); supplements names the OBO lacks")
     ep.add_argument("--no-name-zh", action="store_true", help="omit the Chinese name column from output (English name stays)")
     ep.add_argument("--tmin", type=int, default=5, help="drop terms with fewer targets (default 5)")
     ep.add_argument("--bg", help="background gene list file (default: all annotated genes)")
@@ -333,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd is None and (not args.i or not args.genelist):
         ap.error("enrichment requires -i INPUT and --genelist FILE (or use the 'parse' subcommand)")
-    args._names_df = read_names(args.desc) if getattr(args, "desc", None) else None
+    args._names_df = read_names(_resolve_desc(args.desc)) if getattr(args, "desc", None) else None
     try:
         return args.func(args)
     except (ValueError, KeyError, FileNotFoundError, AssertionError, OSError) as e:
