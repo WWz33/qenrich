@@ -2,7 +2,7 @@
 
 # qenrich
 
-面向非模式生物的快速基因富集工具（GO / KEGG / Pfam / InterPro），统计基于 [decoupler](https://github.com/scverse/decoupler) 的 ORA（Fisher 精确检验，BH 校正）。
+面向非模式生物的快速基因富集工具（GO / KEGG / Pfam / InterPro）。ORA 用双侧 Fisher 精确检验 + BH 校正；带权列跑 GSEA。
 
 注释文件自动识别、解析一次并缓存；基因列表一列一个基因集，一次跑完所有列。
 
@@ -50,6 +50,12 @@ qenrich -i go --genelist gene_list.txt --bg universe.txt -o out/ --plot
 
 # 只跑指定列（列名或 1-based 序号）
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt -c salt_stress_up,2
+
+# 忽略已有缓存：重新解析，且不写缓存
+qenrich -i emapper.annotations.tsv --genelist gene_list.txt --no-cache
+
+# 单侧富集检验，与 clusterProfiler enrichGO 口径一致
+qenrich -i emapper.annotations.tsv --genelist gene_list.txt --alternative greater
 ```
 
 `gene_list.txt` 空白或制表符分隔，一列一个基因集。表头自动识别，列名即集合名（无表头记为 `set1..setN`）。`gene,weight` 列（第二字段为数值，如 log2FC）走 GSEA，纯 ID 列走 ORA。`.gz` 直接读取。
@@ -72,7 +78,7 @@ Glyma.01G000200,1.8
 Glyma.01G000300,-0.5
 ```
 
-每个集合写入 `<set>_enrichment.tsv`（ORA）或 `<set>_gsea.tsv`（GSEA），合并为 `summary.tsv`。英文 `name` 来自内置 OBO。中文只在显式要求时出现：`--zh` 加 `name_zh` 列并把图上标签切换为中文；`--zh 表格.tsv` 合并自定义表（第 2 列英文、第 3 列中文），覆盖 OBO 没有的 id（KEGG、Pfam、InterPro）或个别条目：
+每个集合写入 `<set>_enrichment.tsv`（ORA）或 `<set>_gsea.tsv`（GSEA），合并为 `summary.tsv`。英文 `name` 来自内置 OBO。中文只在加 `--zh` 时出现：多一列 `name_zh`，图上标签也用中文；`--zh 表格.tsv` 合并自定义表（第 2 列英文、第 3 列中文），覆盖 OBO 没有的 id（KEGG、Pfam、InterPro）或个别条目：
 
 ```
 term          name                          name_zh          term_size  overlap  genes           pvalue    log_or  padj
@@ -91,7 +97,7 @@ GO:0048519    negative regulation of bio...  生物过程的负调控   17      
 
 ## 中文标签
 
-中文为可选功能，加 `--zh` 即可：输出多一列 `name_zh`，图上标签切换为中文。`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的 LLM 翻译，未经人工校对，引用前请核对。该文件在仓库根目录、包内也有一份（gzip 压缩），工作目录下的同名文件优先于包内副本。`--zh 表格.tsv` 可把名称表扩展到其他 id 空间（KEGG、Pfam）或覆盖个别条目：
+加 `--zh` 输出中文：多一列 `name_zh`，图上标签也用中文。`go_zh.tsv`（38,092 行）是 go-basic.obo 全部术语名的 LLM 翻译，未经人工校对，引用前请核对。工作目录下的同名文件优先于内置表。`--zh 表格.tsv` 可把名称表扩展到其他 id 空间（KEGG、Pfam）或覆盖个别条目：
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \
@@ -128,8 +134,12 @@ qenrich -i data/format/emapper.annotations.tsv \
 
 `--tmin`（默认 5）丢弃目标基因过少的 term；小注释集调低。
 
-`--padj`（默认 0.05）是统计显著 term 数目、以及配合 `--drop-parents` 判断父 term 是否折叠的阈值；它**不会**过滤 `summary.tsv` 或各 set 的结果表，这些文件按 padj 排序后保留全部测试过的 term。
+`--alternative` 选择 ORA 的检验。默认 `two-sided` 把缺失（depletion）也计入；`greater` 是 clusterProfiler `enrichGO` 用的单侧过表达检验，p 值更小。富集还是缺失，看 `log_or` 的符号。
 
-GO 分析默认用内置的 `go-basic.obo`（2026-07-26，位于 `src/qenrich/data/`）做 DAG 传播并取术语名；`--obo` 可指定其他版本，`--no-obo` 关闭传播。指向已废弃 term 的注释会按其 `replaced_by` 转到替代 term；OBO 中完全没有的 term 会被丢弃并在 stderr 打警告——注释文件早于 OBO 版本时属正常现象。
+解析结果缓存在注释文件旁边（`<file>.qenrich/`）。文件、格式或 qenrich 版本有变化，下次运行就会重新解析。`--no-cache` 不读也不写缓存。
 
-`--bg` 只限制 ORA 的背景集；GSEA 按给出的排序列表直接分析，`--bg` 对 `<set>_gsea.tsv` 不起作用（会打印警告）。GSEA 结果列沿用 clusterProfiler 惯例：`Count` 为 leading-edge 基因数，`GeneRatio` = `Count`/`setSize`。
+`--padj`（默认 0.05）用于统计显著 term 数目，也决定 `--drop-parents` 折叠哪些父 term；它**不会**过滤 `summary.tsv` 或各 set 的结果表，这些文件保留全部测试过的 term，按 padj 排序。
+
+`--bg` 只作用于 ORA 的背景集；GSEA 按给定的排序列表分析，`--bg` 不影响 `<set>_gsea.tsv`（会打印警告）。GSEA 结果列沿用 clusterProfiler：`Count` 为 leading-edge 基因数，`GeneRatio` = `Count`/`setSize`。
+
+GO 分析用内置的 `go-basic.obo`（2026-07-26，`src/qenrich/data/`）做 DAG 传播并取术语名；`--obo` 指定其他版本，`--no-obo` 关闭传播。指向已废弃 term 的注释按 `replaced_by` 转到替代 term；OBO 里没有的 term 会被丢弃并在 stderr 打警告，注释文件早于 OBO 版本时会出现这种情况。

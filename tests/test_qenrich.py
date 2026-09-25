@@ -1245,3 +1245,163 @@ def test_obsolete_alt_id_and_chain_redirect(tmp_path):
     net = pd.DataFrame({"source": ["GO:0000003", "GO:0000008"], "target": ["g1", "g2"]})
     out = go.propagate(net)
     assert set(zip(out["source"], out["target"])) == {("GO:0000001", "g1"), ("GO:0000001", "g2")}
+
+
+# ---- round 8: cache keying, -f conflicts, ORA p-value shortcuts ----
+def test_cache_format_and_version_are_part_of_the_key(tmp_path):
+    """--format and the qenrich version must invalidate a cache, not just the mtime."""
+    import json
+
+    from qenrich import __version__
+
+    objs = {"go": pd.DataFrame({"source": ["GO:1"], "target": ["G1"]})}
+    src = wfile(tmp_path, "src.tsv", "x")
+    cdir = cache_dir_for(src)
+    save_objects(objs, cdir, src, "eggnog")
+    assert cache_fresh(cdir, src, "eggnog")
+    assert not cache_fresh(cdir, src, "generic")  # a different parse -> stale
+    assert cache_fresh(cdir, src)  # fmt omitted: mtime + version only
+    meta = cdir / "meta.json"
+    assert json.loads(meta.read_text())["version"] == __version__
+    stamp = json.loads(meta.read_text())
+    stamp["version"] = "0.0.0"  # written by another qenrich
+    meta.write_text(json.dumps(stamp))
+    assert not cache_fresh(cdir, src, "eggnog")
+    stamp.pop("version")  # legacy stamp: no version key at all
+    meta.write_text(json.dumps(stamp))
+    assert not cache_fresh(cdir, src)
+
+
+def test_forced_format_is_not_defeated_by_the_cache(tmp_path, capsys):
+    """Regression: a fresh cache used to override --format silently."""
+    import json
+
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.emapper.annotations.tsv", EGGNOG)
+    gl = wfile(tmp_path, "g.txt", GENELIST)
+    assert main(["-i", annot, "--genelist", gl, "--tmin", "1", "-o", str(tmp_path / "o1")]) == 0
+    cdir = cache_dir_for(annot)
+    assert json.loads((cdir / "meta.json").read_text())["format"] == "eggnog"
+    capsys.readouterr()
+    rc = main(["-i", annot, "--genelist", gl, "--format", "generic", "--tmin", "1",
+               "-o", str(tmp_path / "o2")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "parsed and cached" in out and "using cache" not in out
+    assert json.loads((cdir / "meta.json").read_text())["format"] == "generic"
+
+
+def test_no_cache_neither_reads_nor_writes(tmp_path, capsys):
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv", "#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\nG3\tGO:0000001\n")
+    gl = wfile(tmp_path, "g.txt", "s\nG1\nG2\nG3\n")
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "--no-cache", "-o", str(tmp_path / "o1")])
+    assert rc == 0
+    assert not cache_dir_for(annot).exists()
+    out = capsys.readouterr().out
+    assert "--no-cache" in out and "using cache" not in out
+    assert (tmp_path / "o1" / "s_enrichment.tsv").is_file()
+    assert main(["-i", annot, "--genelist", gl, "--tmin", "1", "-o", str(tmp_path / "o2")]) == 0
+    assert cache_dir_for(annot).is_dir()  # a normal run does cache
+    capsys.readouterr()
+    assert main(["-i", annot, "--genelist", gl, "--tmin", "1", "--no-cache",
+                 "-o", str(tmp_path / "o3")]) == 0
+    assert "using cache" not in capsys.readouterr().out
+
+
+def test_feature_conflict_on_single_net_errors(tmp_path, capsys):
+    """-f naming another object must fail loudly, not enrich whatever -i pointed at."""
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv", "#query\tGOs\tKEGG_ko\n"
+                                    "G1\tGO:0000001\tK00001\nG2\tGO:0000001\tK00002\n"
+                                    "G3\tGO:0000001\tK00001\n")
+    gl = wfile(tmp_path, "g.txt", "s\nG1\nG2\nG3\n")
+    db = tmp_path / "db"
+    assert main(["parse", annot, "-o", str(db)]) == 0
+    assert main(["-i", "go", "--db", str(db), "-f", "go", "--genelist", gl, "--tmin", "1",
+                 "-o", str(tmp_path / "ok")]) == 0
+    capsys.readouterr()
+    rc = main(["-i", "go", "--db", str(db), "-f", "kegg", "--genelist", gl, "--tmin", "1",
+               "-o", str(tmp_path / "bad")])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "conflicts" in err and "kegg" in err
+    assert not (tmp_path / "bad").exists()
+    netf = wfile(tmp_path, "n.tsv", NET)
+    assert main(["-i", netf, "-f", "go", "--genelist", gl, "--tmin", "1",
+                 "-o", str(tmp_path / "bad2")]) == 1
+    assert "conflicts" in capsys.readouterr().err
+
+
+def test_two_sided_p_shortcut_is_exact():
+    """The mode short-circuit must return exactly what scipy returns, for every table."""
+    from qenrich._enrich import _two_sided_p
+
+    checked = 0
+    for universe in (6, 50, 500, 3000):
+        for term in (1, 3, 20, 200, universe):
+            if term > universe:
+                continue
+            for size in (1, 5, 50, universe):
+                if size > universe:
+                    continue
+                for k in {0, 1, term // 3, term - 1, term, min(term, size), min(term, size) - 1}:
+                    # a real term/set pair always satisfies term + size - k <= universe
+                    if not max(0, term + size - universe) <= k <= min(term, size):
+                        continue
+                    table = [[k, term - k], [size - k, universe - term - size + k]]
+                    want = sts.fisher_exact(table, alternative="two-sided")[1]
+                    got = _two_sided_p(k, term, size, universe)
+                    assert got == want, (k, term, size, universe, got, want)
+                    checked += 1
+    assert checked > 120
+
+
+def test_mode_shortcut_skips_scipy_calls(tmp_path, monkeypatch):
+    """Terms on the hypergeometric mode (p == 1) must not reach scipy at all."""
+    import qenrich._enrich as en
+
+    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
+    _, sets, _ = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
+    calls = []
+    real = sts.fisher_exact
+
+    def counting(*a, **kw):
+        calls.append(a[0])
+        return real(*a, **kw)
+
+    monkeypatch.setattr(en.sts, "fisher_exact", counting)
+    results, _, _ = en.run_ora(net, sets, tmin=3)  # 2 sets x 3 terms, universe 6, term size 3
+    # mode = (3+1)*(3+1)//(6+2) = 2: up hits it on GO:0000002, down on GO:0000003
+    assert len(calls) == 4
+    assert results["up"].set_index("term").loc["GO:0000002", "pvalue"] == 1.0
+
+
+def test_alternative_greater_is_one_sided(tmp_path):
+    # universe = g0..g19 (T0 keeps g12..g19 in it); T1 covers 10 of them, T2 only 2
+    net = pd.DataFrame({
+        "source": ["T1"] * 10 + ["T2"] * 2 + ["T0"] * 8,
+        "target": [f"g{i}" for i in range(10)] + ["g10", "g11"] + [f"g{i}" for i in range(12, 20)],
+    })
+    # set hits the net in {g0..g4, g10}: T1 k=5, T2 k=1, set size 6
+    sets = {"s": [f"g{i}" for i in range(5)] + ["g10", "outside1", "outside2"]}
+    two = run_ora(net, sets, tmin=1)[0]["s"].set_index("term")
+    greater = run_ora(net, sets, tmin=1, alternative="greater")[0]["s"].set_index("term")
+    less = run_ora(net, sets, tmin=1, alternative="less")[0]["s"].set_index("term")
+    for term, k, term_size in (("T1", 5, 10), ("T2", 1, 2)):
+        table = [[k, term_size - k], [6 - k, 20 - term_size - 6 + k]]
+        assert abs(greater.loc[term, "pvalue"] - sts.fisher_exact(table, alternative="greater")[1]) < 1e-12
+        assert abs(less.loc[term, "pvalue"] - sts.fisher_exact(table, alternative="less")[1]) < 1e-12
+    assert not np.isclose(greater.loc["T1", "pvalue"], two.loc["T1", "pvalue"])
+
+    from qenrich._cli import main
+
+    nf = wfile(tmp_path, "n.tsv", NET)
+    gl = wfile(tmp_path, "g.txt", GENELIST)
+    assert main(["-i", nf, "--genelist", gl, "--alternative", "greater", "--no-obo", "--tmin", "3",
+                 "-o", str(tmp_path / "out")]) == 0
+    res = pd.read_csv(tmp_path / "out" / "up_enrichment.tsv", sep="\t")
+    assert len(res) == 3  # --no-obo keeps the raw three terms; no propagation to count around

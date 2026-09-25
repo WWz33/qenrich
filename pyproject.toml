@@ -31,6 +31,3 @@ test = [ "pytest" ]
 
 [tool.hatch.build.targets.wheel]
 packages = [ "src/qenrich" ]
-
-[tool.pytest.ini_options]
-testpaths = [ "tests" ]

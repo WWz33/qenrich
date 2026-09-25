@@ -24,18 +24,45 @@ def _bh(p: np.ndarray) -> np.ndarray:
     return out
 
 
+def _two_sided_p(k: int, term_size: int, set_size: int, universe: int) -> float:
+    """Two-sided Fisher p-value for the ORA table, identical to ``sts.fisher_exact``.
+
+    scipy returns exactly 1.0 whenever the observed overlap sits on the
+    hypergeometric mode, which is where most terms of a real GO net land (the
+    parent terms carry thousands of genes, so the observed overlap is the most
+    likely one). That branch costs two pmf evaluations per term — the dominant
+    cost of a run at organism scale — so the integer mode comparison
+    short-circuits it first: ``k == mode`` means the two pmf calls would be
+    evaluated at the same argument and compare equal, and scipy's value test
+    (``|pexact - pmode| / max(...) <= 1e-14``) then holds because the mode pmf is
+    bounded below by ~1/(sigma*sqrt(2*pi)) with sigma <= sqrt(N/4), i.e. it cannot
+    underflow for any N that fits in int64. Terms off the mode still go through scipy.
+    """
+    if k == (set_size + 1) * (term_size + 1) // (universe + 2):
+        return 1.0
+    return sts.fisher_exact(
+        [[k, term_size - k], [set_size - k, universe - term_size - set_size + k]],
+        alternative="two-sided",
+    )[1]
+
+
 def run_ora(
     net: pd.DataFrame,
     sets: dict[str, list[str]],
     tmin: int = 5,
     bg: list[str] | None = None,
     verbose: bool = False,
+    alternative: str = "two-sided",
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, dict[str, dict]]:
     """Enrich every gene set against the net (Fisher exact + BH FDR).
 
     Computed locally with the same formulas as decoupler's ``mt.ora``: the
     released decoupler <=2.2.0 selects the wrong top-``n_up`` features for the
     2x2 table, so its es/padj are only trustworthy in the unreleased fix.
+
+    ``alternative`` is passed to scipy: ``two-sided`` (decoupler's choice, the
+    default) counts depletion as well, ``greater`` is the one-sided
+    over-representation test clusterProfiler's ``enrichGO`` computes.
 
     Returns
     -------
@@ -67,13 +94,17 @@ def run_ora(
         tested = {t: tg for t, tg in term_targets.items() if len(tg) >= tmin}
         recs = []
         for t, tg in sorted(tested.items()):
-            k = len(tg & gs_set)
+            hit = tg & gs_set
+            k = len(hit)
             # same table as decoupler's _runora: a=k, b=term-only, c=set-only, d=neither
             a, b = k, len(tg) - k
             c, d = n - k, big_n - len(tg) - n + k
-            pval = sts.fisher_exact([[a, b], [c, d]], alternative="two-sided")[1]
+            if alternative == "two-sided":
+                pval = _two_sided_p(k, len(tg), n, big_n)
+            else:
+                pval = sts.fisher_exact([[a, b], [c, d]], alternative=alternative)[1]
             lor = np.log((a + 0.5) * (d + 0.5) / ((b + 0.5) * (c + 0.5)))  # Haldane-Anscombe
-            recs.append((t, len(tg), k, ";".join(sorted(tg & gs_set)), pval, float(lor)))
+            recs.append((t, len(tg), k, ";".join(sorted(hit)), pval, float(lor)))
         df = pd.DataFrame(recs, columns=["term", "term_size", "overlap", "genes", "pvalue", "log_or"])
         df["padj"] = _bh(df["pvalue"].values)
         df = df.sort_values("padj").reset_index(drop=True)

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import __version__
+
 
 def open_text(path: str | Path):
     """Open a possibly-gzipped text file transparently."""
@@ -39,7 +41,13 @@ def save_objects(objects: dict[str, pd.DataFrame], cdir: str | Path, source: str
     cdir.mkdir(parents=True, exist_ok=True)
     for name, df in objects.items():
         df.to_csv(cdir / f"{name}.tsv", sep="\t", index=False)
-    (cdir / "meta.json").write_text(json.dumps({"source": str(source), "mtime": Path(source).stat().st_mtime, "format": fmt}))
+    meta = {
+        "source": str(source),
+        "mtime": Path(source).stat().st_mtime,
+        "format": fmt,
+        "version": __version__,
+    }
+    (cdir / "meta.json").write_text(json.dumps(meta))
 
 
 def load_objects(cdir: str | Path) -> dict[str, pd.DataFrame]:
@@ -51,13 +59,21 @@ def load_objects(cdir: str | Path) -> dict[str, pd.DataFrame]:
     return objects
 
 
-def cache_fresh(cdir: str | Path, source: str | Path) -> bool:
-    """True when meta stamp matches current source file mtime."""
+def cache_fresh(cdir: str | Path, source: str | Path, fmt: str | None = None) -> bool:
+    """True when the meta stamp matches the source mtime, the format and this qenrich.
+
+    ``fmt`` is the format the caller is about to parse with: ``--format`` must not
+    be defeated by a cache written from a different parse. A stamp written by an
+    older qenrich (no ``version`` key) counts as stale, so upgrading the package
+    re-parses instead of serving objects the current code would no longer emit.
+    """
     meta = Path(cdir) / "meta.json"
     source = Path(source)
     if not (meta.is_file() and source.is_file()):
         return False
     try:
-        return json.loads(meta.read_text())["mtime"] == source.stat().st_mtime
+        stamp = json.loads(meta.read_text())
+        fresh = stamp["mtime"] == source.stat().st_mtime and stamp["version"] == __version__
     except (KeyError, json.JSONDecodeError):
         return False
+    return fresh and (fmt is None or stamp.get("format") == fmt)

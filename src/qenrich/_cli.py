@@ -15,39 +15,50 @@ from ._plot_enrichplot import plot_results_enrichplot
 from ._sniff import FORMAT_LABELS, FORMATS, sniff
 
 
-def _resolve_input(args) -> tuple[str, dict[str, pd.DataFrame]]:
-    """Resolve -i into (default_feature, objects); parse+cache raw annotation files."""
+def _resolve_input(args) -> tuple[str, dict[str, pd.DataFrame], str]:
+    """Resolve -i into (default_feature, objects, kind); kind is ``annot`` or ``net``.
+
+    ``net`` means the input is a single net with no feature to choose: a net TSV
+    file, or one object file resolved through ``--db``. The object name is kept
+    as ``default_feature`` so it shows up in the run log and in the message that
+    rejects a conflicting ``-f``.
+    """
     inp = args.i
+    no_cache = getattr(args, "no_cache", False)
     if Path(inp).is_file():
         fmt = args.format or sniff(inp)
         print(f"[qenrich] input: {inp} (detected: {FORMAT_LABELS.get(fmt, fmt)})")
         if fmt == "net":
-            return "net", PARSERS["net"](inp)
+            return "net", PARSERS["net"](inp), "net"
         cdir = cache_dir_for(inp)
-        if cache_fresh(cdir, inp) and not getattr(args, "eggnog_lvl", None):
+        if not no_cache and cache_fresh(cdir, inp, fmt) and not getattr(args, "eggnog_lvl", None):
             print(f"[qenrich] using cache: {cdir}")
             objects = load_objects(cdir)
         else:
             kwargs = {"annot_lvl": args.eggnog_lvl} if fmt == "eggnog" else {}
             objects = PARSERS[fmt](inp, **kwargs)
-            if not getattr(args, "eggnog_lvl", None):  # don't cache level-filtered results
+            if getattr(args, "eggnog_lvl", None):  # don't cache level-filtered results
+                print("[qenrich] parsed (level-filtered, not cached)")
+            elif no_cache:
+                print("[qenrich] parsed (--no-cache: cache neither read nor written)")
+            else:
                 try:
                     save_objects(objects, cdir, inp, fmt)
                     print(f"[qenrich] parsed and cached: {cdir}")
                 except OSError as e:  # read-only input dir must not abort the run
                     print(f"[qenrich] warning: could not write cache {cdir} ({e}); continuing",
                           file=sys.stderr)
-            else:
-                print(f"[qenrich] parsed (level-filtered, not cached)")
         if not objects:
             raise ValueError(f"no annotations found in {inp}")
         for k, v in objects.items():
             print(f"[qenrich] object '{k}': {v['source'].nunique()} terms, {v['target'].nunique()} genes")
-        return ("go" if "go" in objects else next(iter(objects))), objects
+        feature = "go" if "go" in objects else next(iter(objects))
+        return feature, objects, "annot"
     obj_file = Path(args.db) / f"{Path(inp).stem}.tsv"
     if obj_file.is_file():
         print(f"[qenrich] object file: {obj_file}")
-        return "net", PARSERS["net"](obj_file)
+        name = Path(inp).stem
+        return name, {name: PARSERS["net"](obj_file)["net"]}, "net"
     raise FileNotFoundError(
         f"-i must be an existing file or an object name in --db (looked for {obj_file})")
 
@@ -122,12 +133,13 @@ def cmd_enrich(args) -> int:
     from ._genelist import read_genelist
     from ._obo import GeneOntology
 
-    default_feature, objects = _resolve_input(args)
-    if default_feature == "net":
-        feature, net = "net", objects["net"]
-        if args.feature and args.feature != "net":
-            print(f"[qenrich] warning: -f {args.feature} ignored: the input is a single net; "
-                  f"enriching its '{feature}' object", file=sys.stderr)
+    default_feature, objects, kind = _resolve_input(args)
+    if kind == "net":
+        if args.feature and args.feature != default_feature:
+            raise ValueError(
+                f"-f {args.feature} conflicts with the input, which is the single '{default_feature}' "
+                f"net; pass that object as -i, or give the full annotation file to pick a feature")
+        feature, net = default_feature, objects[default_feature]
     else:
         feature = args.feature or default_feature
         if feature not in objects:
@@ -238,7 +250,7 @@ def cmd_enrich(args) -> int:
             bg = [_re.sub(r"\.\d+$", "", g) for g in bg]
     if sets:
         results, es_wide, stats = run_ora(
-            net, sets, tmin=args.tmin, bg=bg, verbose=args.verbose
+            net, sets, tmin=args.tmin, bg=bg, verbose=args.verbose, alternative=args.alternative
         )
         if args.drop_parents:
             if go:
@@ -337,6 +349,13 @@ def main(argv: list[str] | None = None) -> int:
     ep.add_argument("-c", "--columns", help="comma-separated gene-list columns to run (header names or 1-based indices; default: all)")
     ep.add_argument("-f", "--feature", help="object to enrich (go/kegg/pfam/interpro/cog/pathway); default: go if present")
     ep.add_argument("--db", default="qenrich_db", help="object db dir (default ./qenrich_db)")
+    ep.add_argument("--no-cache", action="store_true",
+                    help="do not read or write the <annotation>.qenrich/ cache: parse from scratch "
+                         "and leave no cache behind")
+    ep.add_argument("--alternative", choices=["two-sided", "greater", "less"], default="two-sided",
+                    help="ORA alternative hypothesis: two-sided Fisher (decoupler's choice, default) "
+                         "counts depletion too, 'greater' is the one-sided over-representation test "
+                         "clusterProfiler's enrichGO uses")
     ep.add_argument("--obo", help="go-basic.obo: propagate parents + term names "
                     "(default: the go-basic.obo bundled in data/)")
     ep.add_argument("--no-obo", action="store_true",

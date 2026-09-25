@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.venv/
+venv/
 *.egg-info/
 build/
 dist/
@@ -8,3 +10,4 @@ dist/
 qenrich_db/
 qenrich_results/
 .codegraph/
+benchmarks/

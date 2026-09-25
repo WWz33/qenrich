@@ -2,9 +2,9 @@ English | [简体中文](README.zh.md)
 
 # qenrich
 
-Quick gene enrichment tools (GO / KEGG / Pfam / InterPro) for non-model organisms. Backed by [decoupler](https://github.com/scverse/decoupler) ORA (Fisher exact test, BH FDR).
+Quick gene enrichment tools (GO / KEGG / Pfam / InterPro) for non-model organisms. ORA uses a two-sided Fisher exact test with BH correction; weighted columns run GSEA.
 
-The annotation file is auto-detected, parsed once and cached; the gene list holds one gene set per column and every column is tested in a single run.
+Annotation files are auto-detected, parsed once and cached. A gene list holds one gene set per column, and one run tests every column.
 
 ## Install
 
@@ -50,9 +50,15 @@ qenrich -i go --genelist gene_list.txt --bg universe.txt -o out/ --plot
 
 # run only selected gene-list columns (names or 1-based indices)
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt -c salt_stress_up,2
+
+# ignore an existing cache: parse from scratch, write nothing
+qenrich -i emapper.annotations.tsv --genelist gene_list.txt --no-cache
+
+# one-sided over-representation, the test clusterProfiler's enrichGO computes
+qenrich -i emapper.annotations.tsv --genelist gene_list.txt --alternative greater
 ```
 
-`gene_list.txt` is whitespace- or tab-delimited, one gene set per column. Headers are auto-detected; column names become set names (`set1..setN` if absent). A `gene,weight` column (second field numeric, e.g. log2FC) is analysed by GSEA, plain ID columns by ORA. `.gz` is read directly.
+`gene_list.txt` is whitespace- or tab-delimited, one gene set per column. Headers are auto-detected, and their names become the set names (`set1..setN` when absent). Columns of `gene,weight` pairs (second field numeric, e.g. log2FC) go to GSEA; plain ID columns go to ORA. `.gz` works as is.
 
 Plain ID columns:
 
@@ -91,7 +97,7 @@ Labels follow `--labels {name,id}` (default `name`).
 
 ## Chinese labels
 
-Opt-in via `--zh`: it adds a `name_zh` column and switches plot labels to Chinese. The table (`go_zh.tsv`, 38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed — verify before citing. It ships in the repo root and (gzipped) inside the package; a `go_zh.tsv` in the working directory wins over the packaged copy. `--zh table.tsv` extends it to other id spaces (KEGG, Pfam) or overrides entries:
+Opt-in via `--zh`: it adds a `name_zh` column and switches plot labels to Chinese. The table (`go_zh.tsv`, 38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed; verify before citing. A `go_zh.tsv` in the working directory overrides the bundled one. `--zh table.tsv` extends it to other id spaces (KEGG, Pfam) or overrides entries:
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \
@@ -130,17 +136,25 @@ qenrich -i data/format/emapper.annotations.tsv \
 
 `--tmin` (default 5) drops terms with too few targets; lower for small annotations.
 
-`--padj` (default 0.05) is the cutoff used to count significant terms and, with
-`--drop-parents`, to decide which parents collapse; it does **not** filter
-`summary.tsv` or the per-set tables, which keep every tested term ordered by padj.
+`--alternative` picks the ORA test. The default `two-sided` counts depletion as
+well as enrichment. `greater` runs the one-sided over-representation test that
+clusterProfiler's `enrichGO` uses, which gives smaller p-values. To tell enrichment
+from depletion, read the sign of `log_or`.
 
-`--bg` restricts the ORA background; GSEA works on the ranked list as given, so
-a `--bg` file has no effect on `<set>_gsea.tsv` columns (a warning is printed).
-GSEA rows follow clusterProfiler conventions: `Count` is the leading-edge size
-and `GeneRatio` = `Count`/`setSize`.
+qenrich caches the parsed annotation next to the file (`<file>.qenrich/`). A change
+to the file, the format or the qenrich version makes the next run parse again.
+`--no-cache` skips the cache: it reads nothing and writes nothing.
 
-GO analyses propagate the DAG and take term names from the bundled `go-basic.obo`
-(2026-07-26, in `src/qenrich/data/`); `--obo` points at a different release and
-`--no-obo` turns propagation off. Annotations to a retired term follow its
-`replaced_by` target; terms the OBO does not list are dropped with a warning on
-stderr, which is expected when the annotation predates the OBO release.
+`--padj` (default 0.05) sets the cutoff for counting significant terms and, with
+`--drop-parents`, for collapsing parents. It does **not** filter `summary.tsv` or
+the per-set tables; those keep every tested term, sorted by padj.
+
+`--bg` restricts the ORA background. GSEA uses the ranked list as given, so `--bg`
+does not affect `<set>_gsea.tsv` and qenrich prints a warning. GSEA rows follow
+clusterProfiler: `Count` is the leading-edge size and `GeneRatio` = `Count`/`setSize`.
+
+For GO, qenrich propagates the DAG with the bundled `go-basic.obo` (2026-07-26,
+`src/qenrich/data/`) and reads term names from it. `--obo` points at another
+release; `--no-obo` turns propagation off. Annotations to a retired term follow its
+`replaced_by` target. Terms the OBO does not list are dropped with a warning on
+stderr, which happens when the annotation predates the OBO release.
