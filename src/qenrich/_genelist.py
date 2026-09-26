@@ -1,14 +1,14 @@
-"""Read gene list files where each column is one gene set (or a ranked vector)."""
+"""Read gene list files where each column is one gene set."""
 
 import re
 from pathlib import Path
 
-from ._io import open_text
+from ._io import SKIP_CELLS, open_text
 
-_SKIP = {"", "-", "NA", "N/A", "nan", "None"}
-# The id half must not contain a separator, otherwise a bare comma list whose
-# last token is numeric ("7157,672,675,1234") would be read as one gene,weight.
-_NUM_CELL = re.compile(r"^([^\s,;]+?)[,;]([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$")
+# A cell may carry a weight (``gene,3.2``): the weight is dropped, the id kept.
+# The id half must not contain a separator, otherwise a bare comma list whose last
+# token is numeric ("7157,672,675,1234") would lose three of its four genes.
+_WEIGHTED_CELL = re.compile(r"^([^\s,;]+?)[,;]([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$")
 
 
 def _split_line(line: str) -> list[str]:
@@ -28,7 +28,7 @@ def _has_header(rows: list[list[str]]) -> bool:
     """
     if len(rows) < 2:
         return False
-    first = {c.strip() for c in rows[0] if c.strip() and c.strip() not in _SKIP}
+    first = {c.strip() for c in rows[0] if c.strip() and c.strip() not in SKIP_CELLS}
     if not first:
         return False
     for row in rows[1:]:
@@ -38,27 +38,15 @@ def _has_header(rows: list[list[str]]) -> bool:
     return True
 
 
-def _is_numeric(cells: list[str]) -> bool:
-    """A column is numeric (a ranked vector) when ~all cells are ``gene,weight``."""
-    vals = [c.strip() for c in cells if c.strip() and c.strip() not in _SKIP]
-    if not vals:
-        return False
-    hits = sum(1 for c in vals if _NUM_CELL.match(c))
-    return hits > 0 and hits >= len(vals) - 1
-
-
-def _parse_numeric(cells: list[str]) -> dict[str, float]:
-    out = {}
-    for c in cells:
-        m = _NUM_CELL.match(c.strip())
-        if m:
-            out[m.group(1)] = float(m.group(2))
-    return out
+def _gene_id(cell: str) -> str:
+    """The gene id of a cell, dropping a ``gene,weight`` half if there is one."""
+    m = _WEIGHTED_CELL.match(cell)
+    return m.group(1) if m else cell
 
 
 def read_genelist(
     path: str | Path, no_header: bool = False
-) -> tuple[list[str], dict[str, list[str]], dict[str, dict[str, float]]]:
+) -> tuple[list[str], dict[str, list[str]], list[str]]:
     """Parse a gene list file: one column per gene set.
 
     Parameters
@@ -74,9 +62,10 @@ def read_genelist(
     columns : list[str]
         The detected column names.
     sets : dict[str, list[str]]
-        Plain gene sets (for ORA), ordered and de-duplicated.
-    numeric : dict[str, dict[str, float]]
-        Columns whose cells look like ``gene,weight`` (for GSEA), gene -> weight.
+        Gene sets (for ORA), ordered and de-duplicated.
+    weighted : list[str]
+        Columns where at least one cell carried a ``gene,weight`` pair. The
+        weights are dropped; the caller warns about it.
     """
     rows = []
     with open_text(path) as fh:
@@ -108,17 +97,21 @@ def read_genelist(
     if len(set(header)) != len(header):
         raise ValueError(f"duplicate set names in gene list header: {header}")
     sets: dict[str, list[str]] = {}
-    numeric: dict[str, dict[str, float]] = {}
+    weighted: list[str] = []
     for j, name in enumerate(header):
-        col = [r[j] for r in data]
-        if _is_numeric(col):
-            numeric[name] = _parse_numeric(col)
-            continue
         seen: list[str] = []
-        for c in col:
-            g = c.strip()
-            if g in _SKIP or g in seen:
+        cols_weighted = False
+        for r in data:
+            c = r[j].strip()
+            if c in SKIP_CELLS:
+                continue
+            g = _gene_id(c)
+            if g != c:
+                cols_weighted = True
+            if g in SKIP_CELLS or g in seen:
                 continue
             seen.append(g)
+        if cols_weighted:
+            weighted.append(name)
         sets[name] = seen
-    return header, sets, numeric
+    return header, sets, weighted

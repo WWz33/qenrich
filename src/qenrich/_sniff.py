@@ -26,15 +26,18 @@ FORMATS = [
 ]
 
 
-def _rows(path: str | Path, n: int = 100) -> list[list[str]]:
-    """First n non-empty lines, tab-split (whitespace-split if no tabs)."""
+_PROBE_ROWS = 100  # 100 lines cover any header plus a body sample
+
+
+def _rows(path: str | Path) -> list[list[str]]:
+    """First ``_PROBE_ROWS`` non-empty lines, tab-split (whitespace-split if no tabs)."""
     out = []
     with open_text(path) as fh:
         for line in fh:
             if not line.strip():
                 continue
             out.append(line.rstrip("\r\n").split("\t") if "\t" in line else line.split())
-            if len(out) >= n:
+            if len(out) >= _PROBE_ROWS:
                 break
     return out
 

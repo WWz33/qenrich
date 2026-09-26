@@ -2,16 +2,21 @@ English | [简体中文](README.zh.md)
 
 # qenrich
 
-Quick gene enrichment tools (GO / KEGG / Pfam / InterPro) for non-model organisms. ORA uses a two-sided Fisher exact test with BH correction; weighted columns run GSEA.
-
-Annotation files are auto-detected, parsed once and cached. A gene list holds one gene set per column, and one run tests every column.
+Quick gene enrichment tools (GO / KEGG / Pfam / InterPro) for non-model organisms. ORA runs a one-sided hypergeometric over-representation test with BH correction.
 
 ## Install
 
 ```bash
 git clone https://github.com/WWz33/qenrich.git
 cd qenrich
-pip install -e .            # decoupler and other dependencies install automatically
+pip install -e .
+```
+
+With conda:
+
+```bash
+conda env create -f environment.yml
+conda activate qenrich
 ```
 
 ## Usage
@@ -54,11 +59,11 @@ qenrich -i emapper.annotations.tsv --genelist gene_list.txt -c salt_stress_up,2
 # ignore an existing cache: parse from scratch, write nothing
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt --no-cache
 
-# one-sided over-representation, the test clusterProfiler's enrichGO computes
-qenrich -i emapper.annotations.tsv --genelist gene_list.txt --alternative greater
+# test depletion instead of over-representation
+qenrich -i emapper.annotations.tsv --genelist gene_list.txt --alternative less
 ```
 
-`gene_list.txt` is whitespace- or tab-delimited, one gene set per column. Headers are auto-detected, and their names become the set names (`set1..setN` when absent). Columns of `gene,weight` pairs (second field numeric, e.g. log2FC) go to GSEA; plain ID columns go to ORA. `.gz` works as is.
+`gene_list.txt` is whitespace- or tab-delimited, one gene set per column. Headers are auto-detected, and their names become the set names (`set1..setN` when absent). A cell of the form `gene,3.2` keeps the gene id and drops the weight; a note goes to stderr. `.gz` works as is.
 
 Plain ID columns:
 
@@ -69,7 +74,7 @@ Glyma.01G000200 Glyma.01G000500
 Glyma.01G000300 Glyma.01G000600
 ```
 
-Weighted column (GSEA):
+A column of `gene,weight` pairs is read the same way, weights ignored:
 
 ```
 deg_up
@@ -78,7 +83,7 @@ Glyma.01G000200,1.8
 Glyma.01G000300,-0.5
 ```
 
-Each set is written to `<set>_enrichment.tsv` (ORA) or `<set>_gsea.tsv` (GSEA) and merged into `summary.tsv`, ordered by `padj`. English `name` comes from the bundled OBO. Chinese appears only on request: `--zh` adds a `name_zh` column and Chinese plot labels; `--zh table.tsv` merges a custom table (col 2 English, col 3 Chinese) for ids the OBO does not cover (KEGG, Pfam, InterPro) or overrides entries:
+Each set is written to `<set>_enrichment.tsv` and merged into `summary.tsv`, ordered by `padj`. English `name` comes from the bundled OBO. `--zh` adds a `name_zh` column and Chinese plot labels; `--zh table.tsv` merges a custom table (col 2 English, col 3 Chinese) for ids the OBO does not cover (KEGG, Pfam, InterPro) or overrides entries:
 
 ```
 term          name                          name_zh          term_size  overlap  genes           pvalue    log_or  padj
@@ -97,7 +102,7 @@ Labels follow `--labels {name,id}` (default `name`).
 
 ## Chinese labels
 
-Opt-in via `--zh`: it adds a `name_zh` column and switches plot labels to Chinese. The table (`go_zh.tsv`, 38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed; verify before citing. A `go_zh.tsv` in the working directory overrides the bundled one. `--zh table.tsv` extends it to other id spaces (KEGG, Pfam) or overrides entries:
+`--zh` adds a `name_zh` column and switches plot labels to Chinese. The table (`go_zh.tsv`, 38 092 rows) is an LLM translation of every go-basic.obo term name, not human-reviewed; verify before citing. A `go_zh.tsv` in the working directory overrides the bundled one. `--zh table.tsv` extends it to other id spaces (KEGG, Pfam) or overrides entries:
 
 ```bash
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt \
@@ -136,22 +141,23 @@ qenrich -i data/format/emapper.annotations.tsv \
 
 `--tmin` (default 5) drops terms with too few targets; lower for small annotations.
 
-`--alternative` picks the ORA test. The default `two-sided` counts depletion as
-well as enrichment. `greater` runs the one-sided over-representation test that
-clusterProfiler's `enrichGO` uses, which gives smaller p-values. To tell enrichment
-from depletion, read the sign of `log_or`.
+`--alternative` picks the ORA test. The default `greater` is the one-sided
+over-representation test, P(X >= k). `less` is P(X <= k), which tests depletion;
+either way, read the sign of `log_or` to see which direction a term went.
 
-qenrich caches the parsed annotation next to the file (`<file>.qenrich/`). A change
-to the file, the format or the qenrich version makes the next run parse again.
-`--no-cache` skips the cache: it reads nothing and writes nothing.
+qenrich caches the parsed annotation next to the file (`<file>.qenrich/`), along
+with the propagated GO net and the parsed OBO. A change to the annotation file,
+the format, the OBO or the qenrich version refreshes what went stale. `--no-cache`
+skips the cache: it reads nothing and writes nothing.
 
 `--padj` (default 0.05) sets the cutoff for counting significant terms and, with
 `--drop-parents`, for collapsing parents. It does **not** filter `summary.tsv` or
-the per-set tables; those keep every tested term, sorted by padj.
+the per-set tables; those keep every term that holds at least one gene of the set,
+sorted by padj. Terms below `--tmin`, or sharing no gene with the set, are not
+tested and not reported, so BH adjusts over exactly the reported rows.
 
-`--bg` restricts the ORA background. GSEA uses the ranked list as given, so `--bg`
-does not affect `<set>_gsea.tsv` and qenrich prints a warning. GSEA rows follow
-clusterProfiler: `Count` is the leading-edge size and `GeneRatio` = `Count`/`setSize`.
+`--bg` restricts the ORA background: only genes in that file count towards the
+universe.
 
 For GO, qenrich propagates the DAG with the bundled `go-basic.obo` (2026-07-26,
 `src/qenrich/data/`) and reads term names from it. `--obo` points at another

@@ -1,12 +1,15 @@
 """Minimal go-basic.obo parser: term metadata, alt_id mapping, ancestor propagation."""
 
-import re
+import pickle
 import sys
 from functools import lru_cache
+from pathlib import Path
 
 from ._io import open_text
 
 import pandas as pd
+
+from . import __version__
 
 
 class GeneOntology:
@@ -89,6 +92,35 @@ class GeneOntology:
             alt[k] = tgt
         return cls(parents, meta, alt)
 
+    @classmethod
+    def cached(cls, path: str, cache_dir: str | Path | None = None) -> "GeneOntology":
+        """``from_obo``, reusing a pickle of the parsed stanzas when it is fresh.
+
+        Parsing the 32MB go-basic.obo costs ~0.45s per run; the pickle is 4MB and
+        loads in ~0.05s. The stamp records the OBO path, its mtime and this
+        qenrich version, so a new OBO release or a new qenrich re-parses. Without
+        a cache dir (net TSV and --db inputs) there is nowhere to put it.
+        """
+        if cache_dir is None:
+            return cls.from_obo(path)
+        p = Path(cache_dir) / "obo.pkl"
+        stamp = {"obo": str(Path(path).resolve()), "obo_mtime": Path(path).stat().st_mtime,
+                 "version": __version__}
+        try:
+            with open(p, "rb") as fh:
+                saved, payload = pickle.load(fh)
+            if saved == stamp:
+                return cls(*payload)
+        except (OSError, EOFError, ValueError, TypeError, AttributeError, pickle.UnpicklingError):
+            pass  # unreadable or stale pickle: parse and rewrite
+        go = cls.from_obo(path)
+        try:
+            with open(p, "wb") as fh:
+                pickle.dump((stamp, (go._parents, go._meta, go._alt)), fh, protocol=5)
+        except OSError as e:  # read-only cache dir must not abort the run
+            print(f"[qenrich] warning: could not write {p} ({e}); continuing", file=sys.stderr)
+        return go
+
     @lru_cache(maxsize=None)
     def ancestors(self, term: str) -> frozenset[str]:
         seen: set[str] = set()
@@ -116,30 +148,57 @@ class GeneOntology:
         alt_id entries are translated to their primary ID first. Terms with no
         entry in this ontology (e.g. an OBO older than the annotation file) are
         dropped; a warning reports the loss instead of hiding it.
+
+        Vectorized: factorize puts the work on the ~40k distinct ids instead of
+        the 660k-row Arrow string column (Python-level iteration over Arrow
+        strings costs ~1s per column at this scale); genes are repeated with
+        ``np.repeat`` and pairs are deduplicated through the integer codes.
         """
-        rows = []
-        dropped_terms: set[str] = set()
-        dropped_rows = 0
-        for raw, gene in zip(net["source"], net["target"], strict=True):
-            term = self._alt.get(raw, raw)  # alt_id -> primary, retired -> replacement
-            if term not in self._meta:
-                dropped_terms.add(raw)  # the id as it appears in the user's file
-                dropped_rows += 1
-                continue
-            rows.append((term, gene))
-            for anc in self.ancestors(term):
-                rows.append((anc, gene))
-        out = pd.DataFrame(rows, columns=["source", "target"]).drop_duplicates()
-        out = out[out["source"].isin(self._meta)].reset_index(drop=True)
-        if dropped_terms:
-            lost = set(net["target"]) - set(out["target"])
+        import numpy as np
+
+        raw_codes, raw_uniq = pd.factorize(net["source"])
+        gene_codes, gene_uniq = pd.factorize(net["target"])
+        alt, meta = self._alt, self._meta
+        mapped = np.array([alt.get(t, t) for t in raw_uniq], dtype=object)
+        alive = np.array([t in meta for t in mapped], dtype=bool)
+        if not alive.any():
+            return pd.DataFrame(columns=["source", "target"])
+        anc = {t: sorted(self.ancestors(t)) for t in mapped[alive]}  # resolved once
+        # per distinct source id: [term, *ancestors]; a dropped id expands to []
+        per_term = [[t, *anc[t]] if t in anc else [] for t in mapped]
+        # every row repeats its gene len(per_term) times: the term, then ancestors
+        counts = np.fromiter((len(per_term[c]) for c in raw_codes), np.int64, len(raw_codes))
+        # rows with a dropped term contribute nothing; every other row repeats
+        # its own term's expansion [term, *ancestors]
+        terms = np.concatenate([per_term[c] for c in raw_codes if per_term[c]])
+        genes = np.repeat(gene_codes, counts)
+        # dedupe (term, gene) pairs through integer codes
+        tcodes, tuniq = pd.factorize(terms)
+        pairs = tcodes.astype(np.int64) * len(gene_uniq) + genes
+        pairs.sort()
+        keep = np.empty(len(pairs), dtype=bool)
+        keep[0] = True
+        np.not_equal(pairs[1:], pairs[:-1], out=keep[1:])
+        out = pd.DataFrame({"source": tuniq[pairs[keep] // len(gene_uniq)],
+                            "target": gene_uniq[pairs[keep] % len(gene_uniq)]})
+        out = out[out["source"].isin(meta)].reset_index(drop=True)
+        dropped_rows = int((~alive[raw_codes]).sum())
+        if dropped_rows:
+            dropped_terms = {str(raw_uniq[i]) for i in np.where(~alive)[0]}
+            # genes whose every annotation was dropped: compare unique-gene codes
+            # against the survivors' codes (a Python string-set diff costs ~1s here)
+            survived = pairs[keep] % len(gene_uniq)
+            lost_mask = np.ones(len(gene_uniq), dtype=bool)
+            lost_mask[survived] = False
+            n_lost = int(lost_mask.sum())
             sample = ", ".join(sorted(dropped_terms)[:5])
             more = f" (+{len(dropped_terms) - 5} more)" if len(dropped_terms) > 5 else ""
             msg = (f"[qenrich] warning: {dropped_rows} annotation(s) dropped: "
                    f"{len(dropped_terms)} GO term(s) have no entry in the OBO "
                    f"(retired without a replacement, or the OBO predates the annotation): "
                    f"{sample}{more}")
-            if lost:
-                msg += f"; {len(lost)} gene(s) left with no GO annotation"
+            if n_lost:
+                msg += f"; {n_lost} gene(s) left with no GO annotation"
             print(msg, file=sys.stderr)
         return out
+

@@ -1,66 +1,182 @@
-"""qenrich CLI: enrichment for non-model organisms, powered by decoupler."""
+"""qenrich CLI: gene enrichment (GO / KEGG / Pfam / InterPro) for non-model organisms."""
 
 import argparse
+import json
+import re
 import sys
 from pathlib import Path
 
 import pandas as pd
 
 from . import __version__
-from ._genelist import _NUM_CELL
-from ._io import cache_dir_for, cache_fresh, load_objects, open_text, read_names, save_objects
+from ._genelist import _WEIGHTED_CELL
+from ._io import cache_dir_for, cache_fresh, load_net, load_object, open_text, read_names, save_net, save_objects
 from ._parsers import PARSERS
 from ._plot import plot_heatmap, plot_results
 from ._plot_enrichplot import plot_results_enrichplot
 from ._sniff import FORMAT_LABELS, FORMATS, sniff
 
 
-def _resolve_input(args) -> tuple[str, dict[str, pd.DataFrame], str]:
-    """Resolve -i into (default_feature, objects, kind); kind is ``annot`` or ``net``.
+class _Objects:
+    """Feature lookup over a run's parsed/cached objects, loading on demand.
+
+    A run needs one feature; a 30k-gene annotation caches five objects and reading
+    them all costs ~0.7s. ``counts`` is what the run log reports, filled from the
+    cache stamp when the objects are not in memory.
+    """
+
+    def __init__(self, counts: dict[str, dict]):
+        self.counts = counts
+
+    def load(self, feature: str) -> pd.DataFrame:
+        raise NotImplementedError
+
+
+class _FromCache(_Objects):
+    def __init__(self, cdir: Path, names: list[str], counts: dict[str, dict]):
+        # a stamp from before the counts key reports no objects; the log then
+        # falls back to the loaded net's counts
+        super().__init__(counts or {n: {} for n in names})
+        self.cdir, self.names = cdir, names
+
+    def load(self, feature: str) -> pd.DataFrame:
+        if feature not in self.names:
+            raise KeyError(f"feature '{feature}' not in parsed objects {sorted(self.names)}; "
+                           f"use -f one of {sorted(self.names)}")
+        return load_object(self.cdir, feature)
+
+
+class _InMemory(_Objects):
+    def __init__(self, objects: dict[str, pd.DataFrame]):
+        super().__init__({k: {"terms": v["source"].nunique(), "genes": v["target"].nunique()}
+                          for k, v in objects.items()})
+        self.objects = objects
+
+    def load(self, feature: str) -> pd.DataFrame:
+        if feature not in self.objects:
+            raise KeyError(f"feature '{feature}' not in parsed objects {sorted(self.objects)}; "
+                           f"use -f one of {sorted(self.objects)}")
+        return self.objects[feature]
+
+
+def _resolve_input(args) -> tuple[str, _Objects, str, Path | None]:
+    """Resolve -i into (default_feature, objects, kind, cache_dir).
 
     ``net`` means the input is a single net with no feature to choose: a net TSV
     file, or one object file resolved through ``--db``. The object name is kept
     as ``default_feature`` so it shows up in the run log and in the message that
-    rejects a conflicting ``-f``.
+    rejects a conflicting ``-f``. ``cache_dir`` is set when the input has one
+    (annotation file), so the OBO and propagated-net caches can live beside it.
     """
     inp = args.i
-    no_cache = getattr(args, "no_cache", False)
+    no_cache = args.no_cache
     if Path(inp).is_file():
         fmt = args.format or sniff(inp)
         print(f"[qenrich] input: {inp} (detected: {FORMAT_LABELS.get(fmt, fmt)})")
         if fmt == "net":
-            return "net", PARSERS["net"](inp), "net"
+            return "net", _InMemory(PARSERS["net"](inp)), "net", None
         cdir = cache_dir_for(inp)
-        if not no_cache and cache_fresh(cdir, inp, fmt) and not getattr(args, "eggnog_lvl", None):
+        if not no_cache and cache_fresh(cdir, inp, fmt) and not args.eggnog_lvl:
             print(f"[qenrich] using cache: {cdir}")
-            objects = load_objects(cdir)
+            names = sorted(p.stem for p in cdir.glob("*.tsv") if p.stem != "go_propagated")
+            counts = _cache_counts(cdir, names)
+            objects = _FromCache(cdir, names, counts)
         else:
             kwargs = {"annot_lvl": args.eggnog_lvl} if fmt == "eggnog" else {}
-            objects = PARSERS[fmt](inp, **kwargs)
-            if getattr(args, "eggnog_lvl", None):  # don't cache level-filtered results
+            parsed = PARSERS[fmt](inp, **kwargs)
+            if args.eggnog_lvl:  # don't cache level-filtered results
                 print("[qenrich] parsed (level-filtered, not cached)")
             elif no_cache:
                 print("[qenrich] parsed (--no-cache: cache neither read nor written)")
             else:
                 try:
-                    save_objects(objects, cdir, inp, fmt)
+                    save_objects(parsed, cdir, inp, fmt)
                     print(f"[qenrich] parsed and cached: {cdir}")
                 except OSError as e:  # read-only input dir must not abort the run
                     print(f"[qenrich] warning: could not write cache {cdir} ({e}); continuing",
                           file=sys.stderr)
-        if not objects:
-            raise ValueError(f"no annotations found in {inp}")
-        for k, v in objects.items():
-            print(f"[qenrich] object '{k}': {v['source'].nunique()} terms, {v['target'].nunique()} genes")
-        feature = "go" if "go" in objects else next(iter(objects))
-        return feature, objects, "annot"
+            if not parsed:
+                raise ValueError(f"no annotations found in {inp}")
+            objects = _InMemory(parsed)
+        for k, c in objects.counts.items():
+            if c.get("terms") is None:  # stamp without counts: name the object only
+                print(f"[qenrich] object '{k}'")
+            else:
+                print(f"[qenrich] object '{k}': {c['terms']} terms, {c['genes']} genes")
+        feature = "go" if "go" in objects.counts else next(iter(objects.counts))
+        return feature, objects, "annot", cdir
     obj_file = Path(args.db) / f"{Path(inp).stem}.tsv"
     if obj_file.is_file():
         print(f"[qenrich] object file: {obj_file}")
         name = Path(inp).stem
-        return name, {name: PARSERS["net"](obj_file)["net"]}, "net"
+        return name, _InMemory({name: PARSERS["net"](obj_file)["net"]}), "net", None
     raise FileNotFoundError(
         f"-i must be an existing file or an object name in --db (looked for {obj_file})")
+
+
+_PROP_TSV = "go_propagated.npz"
+_PROP_META = "go_propagated.json"
+
+
+def _cache_counts(cdir: Path, names: list[str]) -> dict[str, dict]:
+    """Per-object term/gene counts from the cache stamp, so the run log does not
+    have to read every object.
+
+    A cache written before the stamp held counts is read once and the stamp is
+    updated in place; a read-only cache dir just keeps reporting net counts.
+    """
+    meta_path = cdir / "meta.json"
+    try:
+        counts = json.loads(meta_path.read_text()).get("objects", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if counts:
+        return counts
+    counts = {}
+    for n in names:
+        df = load_object(cdir, n)
+        counts[n] = {"terms": int(df["source"].nunique()), "genes": int(df["target"].nunique())}
+    try:
+        meta = json.loads(meta_path.read_text())
+        meta["objects"] = counts
+        meta_path.write_text(json.dumps(meta))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return counts
+
+
+def _prop_cache_fresh(prop_path: Path, obo_path: str) -> bool:
+    """True when the cached propagated net was built from this net, OBO and qenrich.
+
+    The propagated net is a function of the parsed annotation, the OBO and the
+    code, so the stamp carries all three: the annotation cache's own stamp (source
+    mtime + version, written by :func:`save_objects`) plus the OBO path and mtime.
+    """
+    meta = prop_path.parent / _PROP_META
+    if not meta.is_file():
+        return False
+    try:
+        stamp = json.loads(meta.read_text())
+        source = json.loads((prop_path.parent / "meta.json").read_text())
+        return (stamp["obo"] == str(Path(obo_path).resolve())
+                and stamp["obo_mtime"] == Path(obo_path).stat().st_mtime
+                and stamp["version"] == __version__
+                and stamp["source_mtime"] == source.get("mtime")
+                and stamp["source_version"] == source.get("version"))
+    except (KeyError, json.JSONDecodeError, OSError):
+        return False
+
+
+def _stamp_prop_cache(prop_path: Path, obo_path: str) -> None:
+    source = json.loads((prop_path.parent / "meta.json").read_text())
+    stamp = {
+        "obo": str(Path(obo_path).resolve()),
+        "obo_mtime": Path(obo_path).stat().st_mtime,
+        "version": __version__,
+        "source_mtime": source.get("mtime"),
+        "source_version": source.get("version"),
+    }
+    (prop_path.parent / _PROP_META).write_text(json.dumps(stamp))
 
 
 def _bundled_obo() -> str | None:
@@ -87,7 +203,7 @@ def _read_bg(path: str) -> list[str]:
     with open_text(path) as fh:
         for line in fh:
             for tok in line.split():
-                m = _NUM_CELL.match(tok)
+                m = _WEIGHTED_CELL.match(tok)
                 if m:
                     vals.append(m.group(1))
                 else:
@@ -95,11 +211,11 @@ def _read_bg(path: str) -> list[str]:
     return vals
 
 
-def _select_columns(header, sets, numeric, spec):
+def _select_columns(header, sets, spec):
     """Filter gene-list columns to those named in ``spec`` (comma-separated
     header names or 1-based indices); default (None) keeps all."""
     if not spec:
-        return sets, numeric
+        return sets
     picks = [p.strip() for p in spec.split(",")]
     selected = []
     for p in picks:
@@ -109,14 +225,13 @@ def _select_columns(header, sets, numeric, spec):
             selected.append(header[int(p) - 1])
         else:
             raise ValueError(f"unknown column '{p}'; header is {header}")
-    return ({k: v for k, v in sets.items() if k in selected},
-            {k: v for k, v in numeric.items() if k in selected})
+    return {k: v for k, v in sets.items() if k in selected}
 
 
-def _name_columns(df: pd.DataFrame, en_of, zh_of, no_zh: bool = False) -> pd.DataFrame:
+def _name_columns(df: pd.DataFrame, en_of, zh_of) -> pd.DataFrame:
     """Insert English ``name`` (always, when resolvable) and Chinese ``name_zh``
     (when the caller supplied Chinese names via --zh) after ``term``."""
-    zhs = [zh_of(t) for t in df["term"]] if not no_zh else []
+    zhs = [zh_of(t) for t in df["term"]]
     ens = [en_of(t) for t in df["term"]]
     if not any(zhs) and not any(ens):
         return df
@@ -129,36 +244,51 @@ def _name_columns(df: pd.DataFrame, en_of, zh_of, no_zh: bool = False) -> pd.Dat
 
 
 def cmd_enrich(args) -> int:
-    from ._enrich import drop_parents, run_gsea, run_ora, strip_suffix
+    from ._enrich import drop_parents, run_ora, strip_suffix
     from ._genelist import read_genelist
     from ._obo import GeneOntology
 
-    default_feature, objects, kind = _resolve_input(args)
+    default_feature, objects, kind, cdir = _resolve_input(args)
     if kind == "net":
         if args.feature and args.feature != default_feature:
             raise ValueError(
                 f"-f {args.feature} conflicts with the input, which is the single '{default_feature}' "
                 f"net; pass that object as -i, or give the full annotation file to pick a feature")
-        feature, net = default_feature, objects[default_feature]
+        feature = default_feature
     else:
         feature = args.feature or default_feature
-        if feature not in objects:
-            raise KeyError(f"feature '{feature}' not in parsed objects {sorted(objects)}; use -f one of {sorted(objects)}")
-        net = objects[feature]
-    print(f"[qenrich] enriching feature: {feature} ({net['source'].nunique()} terms, {net['target'].nunique()} genes)")
 
     go = None
-    if getattr(args, "no_obo", False) and args.obo:
+    if args.no_obo and args.obo:
         print(f"[qenrich] warning: --no-obo wins; --obo {args.obo} ignored", file=sys.stderr)
     if args.obo == "":
         print("[qenrich] warning: --obo is empty; using the bundled OBO", file=sys.stderr)
         args.obo = None
-    obo_path = None if getattr(args, "no_obo", False) else (args.obo or _bundled_obo())
-    if obo_path:
+    obo_path = None if args.no_obo else (args.obo or _bundled_obo())
+    cacheable = not args.no_cache and not args.eggnog_lvl
+    prop_path = cdir / _PROP_TSV if (cdir is not None and cacheable) else None
+    obo_cdir = cdir if cacheable else None  # --no-cache writes nothing, OBO pickle included
+    # propagation is deterministic in (net, OBO, qenrich), so a cached result can
+    # stand in for the raw net entirely when the feature is the go object it was
+    # built from
+    prop_fresh = (prop_path is not None and prop_path.is_file() and obo_path is not None
+                  and _prop_cache_fresh(prop_path, obo_path))
+    if prop_fresh and feature == "go":
+        net = load_net(prop_path)
+        go = GeneOntology.cached(obo_path, obo_cdir)
+        print(f"[qenrich] using propagated GO net: {prop_path}")
+    else:
+        net = objects.load(feature)
+    counts = objects.counts.get(feature) or {}
+    print(f"[qenrich] enriching feature: {feature} ("
+          f"{counts.get('terms', net['source'].nunique())} terms, "
+          f"{counts.get('genes', net['target'].nunique())} genes)")
+
+    if obo_path and not prop_fresh:
         # applies whenever the active net holds GO ids, whatever the input route
         # (annotation file, parsed object db, or net TSV)
         if net["source"].astype(str).str.match(r"GO:\d{7}$").any():
-            onto = GeneOntology.from_obo(obo_path)
+            onto = GeneOntology.cached(obo_path, obo_cdir)
             propagated = onto.propagate(net)
             if propagated.empty:
                 # every id missing from this OBO (annotation newer than the OBO):
@@ -168,6 +298,13 @@ def cmd_enrich(args) -> int:
             else:
                 go = onto
                 net = propagated
+                if prop_path is not None:
+                    try:
+                        save_net(propagated, prop_path)
+                        _stamp_prop_cache(prop_path, obo_path)
+                    except OSError as e:
+                        print(f"[qenrich] warning: could not write {prop_path} ({e}); continuing",
+                              file=sys.stderr)
                 src = "bundled" if not args.obo else "given"
                 print(f"[qenrich] propagated GO DAG ({src} OBO: {Path(obo_path).name}): "
                       f"{net['source'].nunique()} terms, {net['target'].nunique()} genes")
@@ -176,11 +313,17 @@ def cmd_enrich(args) -> int:
             # default silently steps aside for non-GO features
             if args.obo:
                 print("[qenrich] warning: --obo needs a go net, ignoring", file=sys.stderr)
+    elif obo_path:
+        go = GeneOntology.cached(obo_path, obo_cdir)  # term names for the report
 
-    header, sets, numeric = read_genelist(args.genelist, no_header=args.no_header)
-    sets, numeric = _select_columns(header, sets, numeric, getattr(args, "columns", None))
+    header, sets, weighted = read_genelist(args.genelist, no_header=args.no_header)
+    if weighted:
+        print(f"[qenrich] note: column(s) {', '.join(repr(c) for c in weighted)} hold gene,weight "
+              f"pairs; the weights are ignored, the gene ids are used",
+              file=sys.stderr)
+    sets = _select_columns(header, sets, args.columns)
     if args.strip_suffix:
-        sets, numeric, net = strip_suffix(sets, numeric, net)
+        sets, net = strip_suffix(sets, net)
         print("[qenrich] stripped .N version suffixes from gene ids")
 
     # name resolvers. English: the OBO is authoritative for GO ids; the --zh
@@ -194,8 +337,8 @@ def cmd_enrich(args) -> int:
         en_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 1].fillna("")))
     if names_df is not None and names_df.shape[1] >= 3:
         zh_map = dict(zip(names_df.iloc[:, 0], names_df.iloc[:, 2].fillna("")))
-    zh_src = getattr(args, "_zh_path", None)
-    bundled = _bundled_go_zh() if getattr(args, "zh", None) else None
+    zh_src = args._zh_path
+    bundled = _bundled_go_zh() if args.zh else None
     if bundled and (not zh_src or Path(zh_src).resolve() != Path(bundled).resolve()):
         zdf = read_names(bundled)
         base = dict(zip(zdf.iloc[:, 0], zdf.iloc[:, 2].fillna("")))
@@ -216,7 +359,7 @@ def cmd_enrich(args) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
     summary = []
 
-    def report(results, stats, tag, score):
+    def report(results, stats, tag):
         for name, df in results.items():
             s = stats[name]
             if s["n_input"] and s["n_hit"] < 0.5 * s["n_input"]:
@@ -226,8 +369,10 @@ def cmd_enrich(args) -> int:
                     file=sys.stderr,
                 )
             d = _name_columns(df, en_of, zh_of)
+            # only the ORA path counts terms that passed tmin but hold no query gene
+            detail = f"{s['n_pruned']} below tmin" + (f", {s['n_empty']} with no query gene" if "n_empty" in s else "")
             if d.empty:
-                print(f"[qenrich] set '{name}' ({tag}): no terms survived tmin={args.tmin}")
+                print(f"[qenrich] set '{name}' ({tag}): no terms to report ({detail})")
                 continue
             safe = name.replace("/", "_")  # set names may contain / (header cells)
             d.to_csv(outdir / f"{safe}_{tag}.tsv", sep="\t", index=False)
@@ -237,20 +382,18 @@ def cmd_enrich(args) -> int:
             nsig = int((df["padj"] < args.padj).sum())
             print(
                 f"[qenrich] set '{name}' ({tag}): {s['n_input']} genes in, {s['n_hit']} in universe, "
-                f"{s['n_terms']} terms tested ({s['n_pruned']} pruned by tmin), {nsig} with padj<{args.padj}"
+                f"{s['n_terms']} terms tested ({detail}), {nsig} with padj<{args.padj}"
             )
 
     results, es_wide, stats = {}, pd.DataFrame(), {}
-    results_gsea, nes_wide, stats_gsea = {}, pd.DataFrame(), {}
     bg = None
     if args.bg:
         bg = _read_bg(args.bg)
         if args.strip_suffix:
-            import re as _re
-            bg = [_re.sub(r"\.\d+$", "", g) for g in bg]
+            bg = [re.sub(r"\.\d+$", "", g) for g in bg]
     if sets:
         results, es_wide, stats = run_ora(
-            net, sets, tmin=args.tmin, bg=bg, verbose=args.verbose, alternative=args.alternative
+            net, sets, tmin=args.tmin, bg=bg, alternative=args.alternative
         )
         if args.drop_parents:
             if go:
@@ -259,13 +402,7 @@ def cmd_enrich(args) -> int:
             else:
                 print("[qenrich] warning: --drop-parents needs GO terms from an OBO (not --no-obo), ignoring",
                       file=sys.stderr)
-        report(results, stats, "enrichment", "log_or")
-    if numeric:
-        if bg is not None:
-            print("[qenrich] warning: --bg applies to ORA only; GSEA ranks are not background-filtered",
-                  file=sys.stderr)
-        results_gsea, nes_wide, stats_gsea = run_gsea(net, numeric, tmin=args.tmin, verbose=args.verbose)
-        report(results_gsea, stats_gsea, "gsea", "nes")
+        report(results, stats, "enrichment")
 
     if summary:
         pd.concat(summary).to_csv(outdir / "summary.tsv", sep="\t", index=False)
@@ -277,17 +414,10 @@ def cmd_enrich(args) -> int:
         # --labels id keeps ids on the heatmap too (label_of falls back to id)
         heat_label = (lambda t: t) if args.labels == "id" else label_of
         if args.style == "enrichplot":
-            if sets:
-                plot_results_enrichplot(outdir, results, stats, label_map, tag="ep")
-            if numeric:
-                plot_results_enrichplot(outdir, results_gsea, stats_gsea, label_map, tag="gsea_ep")
-            plot_heatmap(pd.concat(summary), outdir, heat_label)
+            plot_results_enrichplot(outdir, results, stats, label_map, tag="ep")
         else:
-            if sets:
-                plot_results(outdir, results, es_wide, label_map)
-            if numeric:
-                plot_results(outdir, results_gsea, nes_wide, label_map)
-            plot_heatmap(pd.concat(summary), outdir, heat_label)
+            plot_results(outdir, results, es_wide, label_map)
+        plot_heatmap(pd.concat(summary), outdir, heat_label)
         print(f"[qenrich] plots written to {outdir}")
     return 0
 
@@ -352,10 +482,10 @@ def main(argv: list[str] | None = None) -> int:
     ep.add_argument("--no-cache", action="store_true",
                     help="do not read or write the <annotation>.qenrich/ cache: parse from scratch "
                          "and leave no cache behind")
-    ep.add_argument("--alternative", choices=["two-sided", "greater", "less"], default="two-sided",
-                    help="ORA alternative hypothesis: two-sided Fisher (decoupler's choice, default) "
-                         "counts depletion too, 'greater' is the one-sided over-representation test "
-                         "clusterProfiler's enrichGO uses")
+    ep.add_argument("--alternative", choices=["greater", "less"], default="greater",
+                    help="ORA alternative hypothesis: 'greater' (default) is P(X >= k), the one-sided "
+                         "over-representation test clusterProfiler's enrichGO runs; 'less' is P(X <= k), "
+                         "which tests depletion")
     ep.add_argument("--obo", help="go-basic.obo: propagate parents + term names "
                     "(default: the go-basic.obo bundled in data/)")
     ep.add_argument("--no-obo", action="store_true",
@@ -380,15 +510,14 @@ def main(argv: list[str] | None = None) -> int:
                          "or bare term id")
     ep.add_argument("--plot", action="store_true", help="write barplot/dotplot/heatmap PNGs")
     ep.add_argument("--style", choices=["matplotlib", "enrichplot"], default="matplotlib",
-                    help="plot style: dc.pl matplotlib (default) or enrichplot (GeneRatio dotplot, Count barplot, heatplot)")
-    ep.add_argument("-v", "--verbose", action="store_true")
+                    help="plot style: plain matplotlib (default) or enrichplot (GeneRatio dotplot, Count barplot, heatplot)")
     ap.set_defaults(func=cmd_enrich)
 
     args = ap.parse_args(argv)
     if args.cmd is None and (not args.i or not args.genelist):
         ap.error("enrichment requires -i INPUT and --genelist FILE (or use the 'parse' subcommand)")
     try:
-        args._zh_path = _resolve_table(args.zh) if getattr(args, "zh", None) else None
+        args._zh_path = _resolve_table(args.zh) if args.zh else None
         args._names_df = read_names(args._zh_path) if args._zh_path else None
         return args.func(args)
     except (ValueError, KeyError, FileNotFoundError, AssertionError, OSError) as e:

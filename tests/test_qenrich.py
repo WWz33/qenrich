@@ -114,8 +114,8 @@ def test_obo_propagation_and_meta(tmp_path):
 
 # -------------------------------------------------------------- genelist ----
 def test_genelist_header_and_noheader(tmp_path):
-    _, sets, num = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
-    assert set(sets) == {"up", "down"} and not num
+    _, sets, weighted = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
+    assert set(sets) == {"up", "down"} and not weighted
     assert sets["up"] == ["Gene01", "Gene02", "Gene03"]
     _, sets, _ = read_genelist(wfile(tmp_path, "l2.txt", GENELIST_NOHEADER))
     assert set(sets) == {"Gene01", "Gene04"}  # all-unique ids: auto-detect must be forced with --no-header
@@ -162,17 +162,17 @@ def test_ora_matches_fisher_exact(tmp_path):
     row = up[up["term"] == "GO:0000003"].iloc[0]  # overlap with up={G1,G2,G3} is {G1}
     assert row["overlap"] == 1 and row["term_size"] == 3
     assert row["genes"] == "Gene01"
-    # pvalue = two-sided Fisher exact on [[k, term-k], [n-k, neither]]
-    assert abs(row["pvalue"] - sts.fisher_exact([[1, 2], [2, 1]])[1]) < 1e-12
-    # padj = BH over the same two-sided Fisher p-values
+    # pvalue = phyper(k-1, M, N-M, n, lower.tail = FALSE), the one-sided tail
+    assert abs(row["pvalue"] - sts.fisher_exact([[1, 2], [2, 1]], alternative="greater")[1]) < 1e-12
+    # padj = BH over those p-values, for the terms holding at least one query gene
     fisher = [
-        sts.fisher_exact([[3, 0], [0, 3]])[1],  # GO:0000001, k=3
-        sts.fisher_exact([[2, 1], [1, 2]])[1],  # GO:0000002, k=2
-        sts.fisher_exact([[1, 2], [2, 1]])[1],  # GO:0000003, k=1
+        sts.fisher_exact([[3, 0], [0, 3]], alternative="greater")[1],  # GO:0000001, k=3
+        sts.fisher_exact([[2, 1], [1, 2]], alternative="greater")[1],  # GO:0000002, k=2
+        sts.fisher_exact([[1, 2], [2, 1]], alternative="greater")[1],  # GO:0000003, k=1
     ]
     for term, expect in zip(["GO:0000001", "GO:0000002", "GO:0000003"], _bh(fisher), strict=True):
         got = up[up["term"] == term].iloc[0]["padj"]
-        assert abs(got - expect) < 1e-6, (term, got, expect)
+        assert abs(got - expect) < 1e-9, (term, got, expect)
     # log_or = Haldane-Anscombe corrected log odds ratio
     lor = np.log((1 + 0.5) * (1 + 0.5) / ((2 + 0.5) * (2 + 0.5)))
     assert abs(row["log_or"] - lor) < 1e-9
@@ -181,8 +181,6 @@ def test_ora_matches_fisher_exact(tmp_path):
 
 
 def test_ora_bg_and_tmin(tmp_path):
-    import pytest
-
     net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
     bg = ["Gene01", "Gene02", "Gene03", "Gene04"]
     results, _, stats = run_ora(net, {"s": ["Gene01", "Gene02"]}, tmin=3, bg=bg)
@@ -195,8 +193,7 @@ def test_ora_bg_and_tmin(tmp_path):
     assert empty["s"].empty and st["s"]["n_pruned"] == 3
 
 
-# ------------------------------------------------------- new v0.2 features ----
-GENELIST_NUMERIC = "up\tfc\nGene01\tGene01,2.0\nGene02\tGene03,-1.5\nGene03\tGene05,0.8\n"
+# --------------------------------------------------------------- features ----
 GENELIST_CRLF = "up\r\nGene01\r\nGene02\r\nGene03\r\n"
 DESC = "K00001\tpyruvate kinase\nK00002\thexokinase\n"
 
@@ -226,16 +223,13 @@ def test_strip_suffix(tmp_path):
     net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
     net["target"] = [f"{g}.1" for g in net["target"]]
     sets = {"s": ["Gene01.1", "Gene02"]}
-    sets2, num2, net2 = strip_suffix(sets, {}, net)
+    sets2, net2 = strip_suffix(sets, net)
     assert set(net2["target"]) == {"Gene01", "Gene02", "Gene03", "Gene04", "Gene05", "Gene06"}
     assert sets2["s"] == ["Gene01", "Gene02"]
 
 
 def test_eggnog_annot_lvl(tmp_path):
-    text = EGGNOG.replace("K\tE\n", "K\tE\n").replace(
-        "#query\tseed_ortholog", "#query\tmax_annot_lvl\tseed_ortholog"
-    )
-    # inject lvl column values: build a tiny file directly instead
+    # build a tiny file with the level column directly
     lines = [
         "## x", "#query\tmax_annot_lvl\tGOs",
         "Gene01\t2\tGO:0000001", "Gene02\t2759\tGO:0000002", "Gene03\t2759\tGO:0000003",
@@ -243,21 +237,6 @@ def test_eggnog_annot_lvl(tmp_path):
     p = wfile(tmp_path, "lvl.emapper.tsv", "\n".join(lines) + "\n")
     objs = PARSERS["eggnog"](p, annot_lvl=2759)
     assert set(objs["go"]["target"]) == {"Gene02", "Gene03"}
-
-
-def test_gsea_numeric_column(tmp_path):
-    from qenrich._enrich import run_gsea
-
-    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
-    _, sets, num = read_genelist(wfile(tmp_path, "num.txt", GENELIST_NUMERIC))
-    assert set(sets) == {"up"} and set(num) == {"fc"}
-    results, nes_wide, stats = run_gsea(net, num, tmin=1)  # 3-gene subset: any tmin>1 prunes all
-    df = results["fc"]
-    assert set(df.columns) == {"term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"}
-    assert len(df) == 3
-    assert stats["fc"]["n_hit"] == 3
-    assert df["Count"].notna().all() and (df["Count"] >= 0).all()
-    assert df["nes"].notna().all()
 
 
 def test_drop_parents(tmp_path):
@@ -291,19 +270,27 @@ def test_obo_children(tmp_path):
     assert go.children("GO:0000003") == set()
 
 
-def test_cli_end_to_end_numeric_and_flags(tmp_path, capsys):
+def test_cli_end_to_end_weighted_column_and_flags(tmp_path, capsys):
+    """A gene,weight column is accepted; the weights are dropped with a note."""
     from qenrich._cli import main
 
     d = tmp_path / "run"
     d.mkdir()
     (d / "net.tsv").write_text(NET)
-    (d / "gl.txt").write_text("up\tfc\nGene01\tGene01,2.0\nGene02\tGene03,-1.5\nGene03\tGene05,0.8\n")
+    (d / "gl.txt").write_text("up\tweighted\nGene01\tGene01,2.0\nGene02\tGene03,-1.5\nGene03\tGene05,0.8\n")
     rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"), "--tmin", "1",
                "-o", str(d / "out"), "--strip-suffix"])
     assert rc == 0
     assert (d / "out" / "up_enrichment.tsv").is_file()
-    assert (d / "out" / "fc_gsea.tsv").is_file()
+    assert (d / "out" / "weighted_enrichment.tsv").is_file()
     assert (d / "out" / "summary.tsv").is_file()
+    err = capsys.readouterr().err
+    assert "weights are ignored" in err and "'weighted'" in err
+    # the id half is what gets tested: every hit is one of those three ids, not
+    # the "id,weight" text
+    res = pd.read_csv(d / "out" / "weighted_enrichment.tsv", sep="\t")
+    hit = {g for cell in res["genes"] for g in str(cell).split(";") if g}
+    assert hit == {"Gene01", "Gene03", "Gene05"}
 
 
 EGGNOG_V2 = (
@@ -354,18 +341,17 @@ def test_enrichplot_style(tmp_path):
 
 def test_select_columns(tmp_path):
     from qenrich._cli import _select_columns
-    header = ["up", "down", "fc"]
-    sets = {"up": ["g1"], "down": ["g2"]}
-    numeric = {"fc": {"g1": 1.0}}
-    s2, n2 = _select_columns(header, sets, numeric, "up,fc")
-    assert set(s2) == {"up"} and set(n2) == {"fc"}
-    s3, n3 = _select_columns(header, sets, numeric, "2")
-    assert set(s3) == {"down"} and not n3
-    s4, n4 = _select_columns(header, sets, numeric, None)
-    assert set(s4) == {"up", "down"} and set(n4) == {"fc"}
+    header = ["up", "down", "third"]
+    sets = {"up": ["g1"], "down": ["g2"], "third": ["g3"]}
+    s2 = _select_columns(header, sets, "up,third")
+    assert set(s2) == {"up", "third"}
+    s3 = _select_columns(header, sets, "2")
+    assert set(s3) == {"down"}
+    s4 = _select_columns(header, sets, None)
+    assert set(s4) == {"up", "down", "third"}
 
 
-def test_name_columns_dual_and_no_zh(tmp_path):
+def test_name_columns(tmp_path):
     from qenrich._cli import _name_columns
     import pandas as pd
     df = pd.DataFrame({"term": ["GO:1", "GO:2"], "term_size": [3, 2]})
@@ -374,11 +360,12 @@ def test_name_columns_dual_and_no_zh(tmp_path):
     d = _name_columns(df, lambda t: en.get(t, ""), lambda t: zh.get(t, ""))
     assert list(d.columns)[:3] == ["term", "name", "name_zh"]
     assert d.loc[0, "name_zh"] == "应激响应"
-    d2 = _name_columns(df, lambda t: en.get(t, ""), lambda t: zh.get(t, ""), no_zh=True)
+    # no Chinese names resolvable (no --zh): English only, no empty name_zh column
+    d2 = _name_columns(df, lambda t: en.get(t, ""), lambda t: "")
     assert "name_zh" not in d2.columns and "name" in d2.columns
 
 
-# ---- review: direct parser tests for b2g_annot, b2g_tabular, pannzer, kofam ----
+# ---- direct parser tests for b2g_annot, b2g_tabular, pannzer, kofam ----
 def test_parse_b2g_annot_direct(tmp_path):
     objs = PARSERS["b2g_annot"](wfile(tmp_path, "b.annot", B2G_ANNOT))
     assert set(zip(objs["go"]["source"], objs["go"]["target"])) == {
@@ -411,23 +398,7 @@ def test_parse_kofam_direct(tmp_path):
     assert "-" not in set(kegg["source"])
 
 
-# ---- review: GSEA leading edge numerical verification ----
-def test_gsea_leading_edge_branches():
-    """Asymmetric cases where positive and negative branches give DIFFERENT edges."""
-    from qenrich._enrich import _leading_edge
-    # positive peak dominates: hit g1 ranked first (weight 5), hit g6 ranked low (1)
-    # positive edge = {g1}; negative edge would be {g6} — they differ
-    vec = {"g1": 5.0, "g2": 4.0, "g3": -1.0, "g4": -2.0, "g5": -3.0, "g6": 1.0}
-    count, edge = _leading_edge(vec, {"g1", "g6"})
-    assert count == 1 and edge == ["g1"], (count, edge)
-    # negative peak dominates: misses ranked high, hit g6 at the bottom
-    # negative edge = {g6}; positive edge would be {g1, g6} — they differ
-    vec = {"g1": 1.0, "g2": 5.0, "g3": 4.0, "g4": -1.0, "g5": -2.0, "g6": -3.0}
-    count, edge = _leading_edge(vec, {"g1", "g6"})
-    assert count == 1 and edge == ["g6"], (count, edge)
-
-
-# ---- review: 3-column read_names (EN + ZH) ----
+# ---- 3-column read_names (EN + ZH) ----
 def test_read_names_3col(tmp_path):
     from qenrich._io import read_names
     text = "GO:0000001\tstress response\t应激响应\nGO:0000002\tbinding\t结合\n"
@@ -437,7 +408,7 @@ def test_read_names_3col(tmp_path):
     assert df.iloc[0, 2] == "应激响应"
 
 
-# ---- review: empty gene set branch ----
+# ---- empty gene set branch ----
 def test_ora_empty_set(tmp_path):
     net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
     results, _, stats = run_ora(net, {"empty": []}, tmin=3)
@@ -445,7 +416,7 @@ def test_ora_empty_set(tmp_path):
     assert stats["empty"]["n_hit"] == 0
 
 
-# ---- review: CLI e2e with --zh + -c ----
+# ---- CLI e2e with --zh + -c ----
 def test_cli_desc_supplies_both_name_columns(tmp_path):
     from qenrich._cli import main
     d = tmp_path / "run"
@@ -463,7 +434,7 @@ def test_cli_desc_supplies_both_name_columns(tmp_path):
     assert "name" in hdr and "name_zh" in hdr  # --zh table col 3 brings Chinese
 
 
-# ---- round 2: OBO propagate alt_id ----
+# ---- OBO propagate alt_id ----
 def test_obo_propagate_alt_id(tmp_path):
     from qenrich._obo import GeneOntology
     import pandas as pd
@@ -479,7 +450,7 @@ def test_obo_propagate_alt_id(tmp_path):
     assert sources == {"GO:0000001"}
 
 
-# ---- round 2: GFF3 multi-Parent ----
+# ---- GFF3 multi-Parent ----
 def test_gff3_multi_parent(tmp_path):
     text = "##gff-version 3\n" \
            "chr1\tg\tgene\t1\t100\t.\t+\t.\tID=gene:Gene01;Ontology_term=GO:0000001\n" \
@@ -491,7 +462,7 @@ def test_gff3_multi_parent(tmp_path):
     assert ("GO:0000002", "Gene01") in zip(objs["go"]["source"], objs["go"]["target"], strict=True)
 
 
-# ---- round 2: read_names literal NA preservation ----
+# ---- read_names literal NA preservation ----
 def test_read_names_literal_na(tmp_path):
     from qenrich._io import read_names
     text = "GO:0000001\tstress\t应激\nGO:0000002\tNA\t结合\n"
@@ -499,7 +470,7 @@ def test_read_names_literal_na(tmp_path):
     assert df.iloc[1, 1] == "NA"  # literal "NA" preserved, not dropped to NaN
 
 
-# ---- round 4: numeric gene IDs survive cache reload ----
+# ---- numeric gene IDs survive cache reload ----
 def test_cache_numeric_gene_ids(tmp_path):
     import pandas as pd
     objs = {"kegg": pd.DataFrame({"source": ["K1", "K2"], "target": ["00123", "456"]})}
@@ -510,19 +481,19 @@ def test_cache_numeric_gene_ids(tmp_path):
     assert set(loaded["target"]) == {"00123", "456"}  # leading zero preserved
 
 
-# ---- round 4: strip-suffix applies to --bg ----
+# ---- strip-suffix applies to --bg ----
 def test_ora_bg_strip_suffix(tmp_path):
     net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
     net["target"] = [f"{g}.1" for g in net["target"]]
     bg = [f"{g}.1" for g in ["Gene01", "Gene02", "Gene03", "Gene04", "Gene05", "Gene06"]]
     sets = {"s": ["Gene01.1", "Gene02"]}
     from qenrich._enrich import strip_suffix, run_ora
-    sets2, _, net2 = strip_suffix(sets, {}, net)
+    sets2, net2 = strip_suffix(sets, net)
     results, _, stats = run_ora(net2, sets2, tmin=1, bg=[g[:-2] for g in bg])
     assert stats["s"]["n_hit"] == 2  # bg stripped: no overlap error, hits found
 
 
-# ---- round 4: header with trailing tab (empty padded cell) ----
+# ---- header with trailing tab (empty padded cell) ----
 def test_genelist_trailing_tab_header(tmp_path):
     text = "SetA\tSetB\t\nGene01\tGene04\t\nGene02\tGene05\t\n"
     _, sets, _ = read_genelist(wfile(tmp_path, "tt.txt", text))
@@ -530,7 +501,7 @@ def test_genelist_trailing_tab_header(tmp_path):
     assert sets["SetA"] == ["Gene01", "Gene02"]
 
 
-# ---- round 4: OBO EOF stanza alt_id commit ----
+# ---- OBO EOF stanza alt_id commit ----
 def test_obo_eof_alt_id(tmp_path):
     from qenrich._obo import GeneOntology
     text = "[Term]\nid: GO:9a\nname: last term\nnamespace: molecular_function\nalt_id: GO:9b"  # no trailing blank line
@@ -538,14 +509,14 @@ def test_obo_eof_alt_id(tmp_path):
     assert go._alt.get("GO:9b") == "GO:9a"  # EOF commit registers alt_id
 
 
-# ---- round 4: GFF3/B2G trailing tab tolerated ----
+# ---- GFF3/B2G trailing tab tolerated ----
 def test_gff3_trailing_tab(tmp_path):
     text = "##gff-version 3\nchr1\tg\tgene\t1\t100\t.\t+\t.\tID=gene:G1;Ontology_term=GO:0000001\t\n"
     objs = PARSERS["gff3"](wfile(tmp_path, "tt.gff3", text))
     assert ("GO:0000001", "G1") in zip(objs["go"]["source"], objs["go"]["target"], strict=True)
 
 
-# ---- round 4: read_names literal values with BOM ----
+# ---- read_names literal values with BOM ----
 def test_read_names_bom(tmp_path):
     from qenrich._io import read_names
     p = tmp_path / "bom.tsv"
@@ -554,37 +525,29 @@ def test_read_names_bom(tmp_path):
     assert df.iloc[0, 0] == "GO:1"  # BOM stripped, id intact
 
 
-# ---- round 5: parse_generic keeps first row of header-less files ----
+# ---- parse_generic keeps first row of header-less files ----
 def test_generic_headerless_first_row_kept(tmp_path):
     text = "G1\tGO:0000001\nG2\tGO:0000002\n"
     objs = PARSERS["generic"](wfile(tmp_path, "nh.txt", text))
-    assert set(objs["go"]["target"]) == {"G1", "G2"}  # G1 was previously dropped
+    assert set(objs["go"]["target"]) == {"G1", "G2"}  # the header heuristic must keep a real first-row gene
 
 
-# ---- round 5: single-row gene list is a header-only file ----
+# ---- single-row gene list is a header-only file ----
 def test_genelist_single_row_header(tmp_path):
     _, sets, _ = read_genelist(wfile(tmp_path, "one.txt", "DE_up\tDE_down\n"))
     assert set(sets) == {"DE_up", "DE_down"} and sets["DE_up"] == []
 
 
-# ---- round 5: strip_suffix dedups versioned net rows ----
+# ---- strip_suffix dedups versioned net rows ----
 def test_strip_suffix_net_dedup(tmp_path):
     from qenrich._enrich import strip_suffix
     net = pd.DataFrame({"source": ["GO:1", "GO:1"], "target": ["Gene01.1", "Gene01.2"]})
-    _, _, net2 = strip_suffix({}, {}, net)
+    _, net2 = strip_suffix({}, net)
     assert not net2.duplicated(subset=["source", "target"]).any()
     assert set(net2["target"]) == {"Gene01"}
 
 
-# ---- round 5: run_gsea survives fewer genes than tmin ----
-def test_gsea_below_tmin_no_crash(tmp_path):
-    from qenrich._enrich import run_gsea
-    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
-    results, _, stats = run_gsea(net, {"tiny": {"Gene01": 2.0}}, tmin=5)
-    assert results["tiny"].empty  # skipped, not crashed
-
-
-# ---- round 5: iprscan versioned pfam accessions ----
+# ---- iprscan versioned pfam accessions ----
 def test_iprscan_versioned_pfam(tmp_path):
     text = ("G1\t0123456789abcdef0123456789abcdef\t150\tPfam\tPF00001.20\tKinase\t1\t100\t"
             "1e-5\tT\t20240101\tIPR000001\tDomain\tGO:0000001\t-\n")
@@ -592,7 +555,7 @@ def test_iprscan_versioned_pfam(tmp_path):
     assert set(objs["pfam"]["source"]) == {"PF00001"}  # version stripped
 
 
-# ---- round 5: gzipped OBO readable ----
+# ---- gzipped OBO readable ----
 def test_obo_gzipped(tmp_path):
     import gzip as gz
     from qenrich._obo import GeneOntology
@@ -603,7 +566,7 @@ def test_obo_gzipped(tmp_path):
     assert go.name("GO:0000001") == "parent process"
 
 
-# ---- round 6: ragged rows must not shift pandas columns (index_col=False) ----
+# ---- ragged rows must not shift pandas columns (index_col=False) ----
 def test_eggnog_trailing_tab_no_column_shift(tmp_path):
     base = "#query\tGOs\nG1\tGO:0000001\t \nG2\tGO:0000002\t \n"
     objs = PARSERS["eggnog"](wfile(tmp_path, "tt.tsv", base))
@@ -618,7 +581,7 @@ def test_trinotate_trailing_tab_keeps_gene_ids(tmp_path):
     assert set(objs["go"]["target"]) == {"G1", "G2"}  # gene ids, not transcript ids
 
 
-# ---- round 6: gff3 trailing tab+space must not drop the row ----
+# ---- gff3 trailing tab+space must not drop the row ----
 def test_gff3_trailing_tab_space(tmp_path):
     text = ("##gff-version 3\n"
             "chr1\tg\tgene\t1\t100\t.\t+\t.\tID=gene:G1;Ontology_term=GO:0000001\t \n")
@@ -626,7 +589,7 @@ def test_gff3_trailing_tab_space(tmp_path):
     assert set(objs["go"]["target"]) == {"G1"}
 
 
-# ---- round 6: pipe-separated identifiers everywhere ----
+# ---- pipe-separated identifiers everywhere ----
 def test_gaf_pipe_separated_go(tmp_path):
     text = ("!gaf-version: 2.2\n"
             + "\t".join(["UniProtKB", "P12345", "P12345", "", "GO:0004674|GO:0005524",
@@ -657,7 +620,7 @@ def test_eggnog_uppercase_header(tmp_path):
     assert set(objs["go"]["target"]) == {"G1"}
 
 
-# ---- round 6: b2g .annot extra description column tolerated ----
+# ---- b2g .annot extra description column tolerated ----
 def test_b2g_annot_fifth_column(tmp_path):
     text = "G1\tGO:0004674;GO:0005524\tInterPro\tIPR000719\tprotein kinase\nG2\tGO:0004177\tInterPro\tIPR001966\n"
     objs = PARSERS["b2g_annot"](wfile(tmp_path, "d.annot", text))
@@ -666,12 +629,12 @@ def test_b2g_annot_fifth_column(tmp_path):
     assert "pfam" not in objs  # free-text 'PF00069' in col 5 must not fabricate pairs
 
 
-# ---- round 6: ORA decoupler-free statistics ----
+# ---- ORA statistics ----
 def test_ora_set_equals_universe(tmp_path):
     net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
     universe = sorted(set(net["target"]))
     results, _, _ = run_ora(net, {"all": universe}, tmin=3)
-    assert not results["all"].empty  # previously crashed in decoupler's _runora
+    assert not results["all"].empty  # a universe-sized set still gets a table
 
 
 def test_ora_pvalue_padj_consistent(tmp_path):
@@ -683,17 +646,7 @@ def test_ora_pvalue_padj_consistent(tmp_path):
     assert (up["padj"] <= 1.0).all() and (up["padj"] > 0).all()
 
 
-def test_gsea_skip_path_no_nameerror(tmp_path):
-    from qenrich._enrich import run_gsea
-    # each term shares only 2 targets with the row -> below tmin=5 -> skip cleanly
-    net = pd.DataFrame([(t, g) for t, gs in {"T1": [f"G{i}" for i in range(5)],
-                                             "T2": [f"G{i}" for i in range(5, 10)]}
-                        .items() for g in gs], columns=["source", "target"])
-    results, _, stats = run_gsea(net, {"r": {g: 1.0 for g in ["G0", "G1", "G5", "G6"]}}, tmin=5)
-    assert results["r"].empty and stats["r"]["n_input"] == 4
-
-
-# ---- round 7: set names with / must not break plot filenames ----
+# ---- set names with / must not break plot filenames ----
 def test_plot_slash_set_name(tmp_path):
     from qenrich._plot import plot_results
 
@@ -718,9 +671,8 @@ def test_enrichplot_slash_set_name_and_tag(tmp_path):
     assert (out / "ep_heatplot.png").is_file()  # default tag
 
 
-# ---- round 7: --obo works via the parse -> --db object route ----
+# ---- --obo works via the parse -> --db object route ----
 def test_cli_obo_via_object_db(tmp_path, capsys):
-    import subprocess, sys as _sys
     from qenrich._cli import main
 
     annot = wfile(tmp_path, "a.tsv", "#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\nG3\tGO:0000001\n"
@@ -733,26 +685,12 @@ def test_cli_obo_via_object_db(tmp_path, capsys):
                "--obo", wfile(tmp_path, "t.obo", OBO), "--tmin", "1", "-o", str(tmp_path / "r")])
     assert rc == 0
     out = "\n".join(capsys.readouterr().out.splitlines())
-    assert "propagated GO DAG" in out  # was silently skipped before
+    assert "propagated GO DAG" in out  # the object-db route must propagate too
     res = (tmp_path / "r" / "s_enrichment.tsv").read_text()
     assert "name" in res.splitlines()[0]  # obo term names filled
 
 
-# ---- round 7: ORA and GSEA heatplots coexist (no overwrite) ----
-def test_enrichplot_ora_gsea_heatplot_coexist(tmp_path):
-    from qenrich._plot_enrichplot import plot_results_enrichplot
-
-    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
-    results, _, stats = run_ora(net, {"up": ["Gene01", "Gene02", "Gene03"]}, tmin=3)
-    out = tmp_path / "ep"
-    out.mkdir()
-    plot_results_enrichplot(out, results, stats, None, top=3, tag="ep")
-    plot_results_enrichplot(out, results, stats, None, top=3, tag="gsea_ep")
-    assert (out / "ep_heatplot.png").is_file()
-    assert (out / "gsea_ep_heatplot.png").is_file()
-
-
-# ================= review round 8: verified-fix regression tests =================
+# ===================== regression tests =====================
 
 def test_read_bg_weighted_pairs_and_comma_lists(tmp_path):
     """--bg keeps the id from gene,weight / gene;weight but still splits bare
@@ -767,13 +705,13 @@ def test_read_bg_weighted_pairs_and_comma_lists(tmp_path):
 
 def test_num_cell_regex_rejects_separator_in_id():
     """The gene,weight pattern must not swallow a separator inside the id half."""
-    from qenrich._genelist import _NUM_CELL
+    from qenrich._genelist import _WEIGHTED_CELL
 
-    assert _NUM_CELL.match("Gene01,3.2").group(1) == "Gene01"
-    assert _NUM_CELL.match("Gene01;3.2").group(1) == "Gene01"
-    assert _NUM_CELL.match("Gene01,-1.5e-3").group(1) == "Gene01"
-    assert _NUM_CELL.match("7157,672,675,1234") is None
-    assert _NUM_CELL.match("a,b,c") is None
+    assert _WEIGHTED_CELL.match("Gene01,3.2").group(1) == "Gene01"
+    assert _WEIGHTED_CELL.match("Gene01;3.2").group(1) == "Gene01"
+    assert _WEIGHTED_CELL.match("Gene01,-1.5e-3").group(1) == "Gene01"
+    assert _WEIGHTED_CELL.match("7157,672,675,1234") is None
+    assert _WEIGHTED_CELL.match("a,b,c") is None
 
 
 def test_plot_unique_label_map_disambiguates():
@@ -845,58 +783,7 @@ def test_cache_write_failure_does_not_abort(tmp_path, monkeypatch, capsys):
     assert "could not write cache" in capsys.readouterr().err
 
 
-def test_gsea_padj_matches_decoupler_bh(tmp_path):
-    """run_gsea must pass decoupler's BH-adjusted p-values through unchanged."""
-    import decoupler as dc
-
-    from qenrich._enrich import run_gsea
-
-    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
-    num = {"fc": {"Gene01": 2.0, "Gene03": -1.5, "Gene05": 0.8}}
-    results, _, _ = run_gsea(net, num, tmin=1)
-    got = results["fc"].set_index("term")
-
-    genes = sorted(num["fc"])
-    row = pd.DataFrame([[num["fc"][g] for g in genes]], index=["fc"], columns=genes)
-    es, pv = dc.mt.gsea(row, net, tmin=1, empty=False, verbose=False)
-
-    for term in es.columns:
-        exp_nes = float(es.loc["fc", term])
-        exp_padj = max(float(pv.loc["fc", term]), np.finfo(float).eps)  # run_gsea clips at eps
-        assert abs(got.loc[term, "nes"] - exp_nes) < 1e-9
-        assert abs(got.loc[term, "padj"] - exp_padj) < 1e-9
-
-
-def test_leading_edge_matches_decoupler_esrank():
-    """_leading_edge must agree with decoupler's own ES peak on random vectors."""
-    import numpy as np
-
-    from decoupler.mt._gsea import _esrank
-
-    from qenrich._enrich import _leading_edge
-
-    rng = np.random.default_rng(0)
-    for _ in range(200):
-        n_all = int(rng.integers(6, 30))
-        genes = [f"g{i}" for i in range(n_all)]
-        vec = {g: float(rng.normal()) for g in genes}
-        n_set = int(rng.integers(2, n_all))
-        targets = set(rng.choice(genes, size=n_set, replace=False))
-
-        count, edge = _leading_edge(vec, targets)
-
-        order = sorted(vec, key=lambda g: -vec[g])
-        row = np.ascontiguousarray([vec[g] for g in order], dtype=np.float64)
-        set_msk = np.ascontiguousarray([g in targets for g in order])
-        mx, j, _ = _esrank(row, np.arange(n_all), set_msk, 1.0 / (n_all - n_set))
-        # decoupler's own peak index j defines the leading edge (clusterProfiler semantics)
-        exp_edge = ({g for g in order[: j + 1] if g in targets} if mx >= 0
-                    else {g for g in order[j + 1:] if g in targets})
-        assert set(edge) == exp_edge, (vec, targets, j, mx)
-        assert count == len(exp_edge)
-
-
-# ================= round-2 review fixes =================
+# ========== read_names header skip, --labels id on the heatmap ==========
 
 def test_read_names_header_row_skipped(tmp_path):
     """A --zh table with a header row must not inject bogus name mappings."""
@@ -908,46 +795,6 @@ def test_read_names_header_row_skipped(tmp_path):
     # header-less files are untouched
     df2 = read_names(wfile(tmp_path, "nohdr.tsv", "GO:0000001\tstress\t应激\n"))
     assert df2.iloc[0, 1] == "stress"
-
-
-def test_leading_edge_all_zero_term_weights():
-    """A term whose genes all carry weight 0 has no direction: empty edge."""
-    from qenrich._enrich import _leading_edge
-
-    vec = {"a": 0.0, "b": 0.0, "c": 3.0, "d": -2.0, "e": 1.0}
-    assert _leading_edge(vec, {"a", "b"}) == (0, [])
-    # mixed (one zero-weight hit among non-zero): the zero adds nothing but the
-    # term still has direction, so an edge exists
-    count, edge = _leading_edge({"a": 0.0, "b": 5.0, "c": -1.0, "d": -1.0}, {"a", "b"})
-    assert count >= 1 and "b" in edge
-
-
-def test_gsea_generatio_is_count_over_set_size(tmp_path):
-    """GeneRatio follows clusterProfiler: Count (leading edge) / setSize."""
-    from qenrich._enrich import run_gsea
-
-    net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
-    num = {"fc": {"Gene01": 2.0, "Gene02": 1.0, "Gene03": -1.0}}
-    results, _, _ = run_gsea(net, num, tmin=1)
-    d = results["fc"]
-    assert "setSize" in d.columns
-    assert (d["GeneRatio"] == d["Count"] / d["setSize"]).all()
-    assert (d["setSize"] == 3).all()
-
-
-def test_bg_ignored_for_gsea_warns(tmp_path, capsys):
-    """--bg applies to ORA only; GSEA runs must warn about the ignore."""
-    from qenrich._cli import main
-
-    d = tmp_path / "run"
-    d.mkdir()
-    (d / "net.tsv").write_text(NET)
-    (d / "gl.txt").write_text("fc\nGene01,2.0\nGene03,-1.5\nGene05,0.8\n")
-    (d / "bg.txt").write_text("Gene01\nGene02\nGene03\n")
-    rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"),
-               "--tmin", "1", "--bg", str(d / "bg.txt"), "-o", str(d / "out")])
-    assert rc == 0
-    assert "--bg applies to ORA only" in capsys.readouterr().err
 
 
 def test_labels_id_applies_to_heatmap(tmp_path, capsys):
@@ -982,11 +829,9 @@ def test_labels_id_applies_to_heatmap(tmp_path, capsys):
 def test_disp_len_cjk():
     """CJK chars count ~1.7x so figure width grows for Chinese labels."""
     from qenrich._plot import _disp_len
-    from qenrich._plot_enrichplot import _disp_len as _dl2
 
     assert _disp_len("abcd") == 4.0
     assert _disp_len("对胁迫的响应") > 9.0
-    assert _dl2("abcd") == 4.0  # both modules share the rule
 
 
 def test_dotplot_axes_after_labels(tmp_path):
@@ -1143,7 +988,7 @@ def test_no_obo_flag_skips_propagation(tmp_path, capsys):
     assert "propagated GO DAG" not in capsys.readouterr().out
 
 
-# ============ review-of-review fixes: revert guard, warnings, precedence ============
+# ============ propagation revert guard, warnings, flag precedence ============
 
 ALL_UNKNOWN_NET = ("source\ttarget\n"
                    "GO:9000001\tg1\nGO:9000001\tg2\nGO:9000002\tg3\n")
@@ -1247,7 +1092,7 @@ def test_obsolete_alt_id_and_chain_redirect(tmp_path):
     assert set(zip(out["source"], out["target"])) == {("GO:0000001", "g1"), ("GO:0000001", "g2")}
 
 
-# ---- round 8: cache keying, -f conflicts, ORA p-value shortcuts ----
+# ---- cache keying, -f conflicts, ORA p-value shortcuts ----
 def test_cache_format_and_version_are_part_of_the_key(tmp_path):
     """--format and the qenrich version must invalidate a cache, not just the mtime."""
     import json
@@ -1336,51 +1181,70 @@ def test_feature_conflict_on_single_net_errors(tmp_path, capsys):
     assert "conflicts" in capsys.readouterr().err
 
 
-def test_two_sided_p_shortcut_is_exact():
-    """The mode short-circuit must return exactly what scipy returns, for every table."""
-    from qenrich._enrich import _two_sided_p
+def test_fisher_pvalues_match_scipy_on_a_grid():
+    """Vectorized p-values must track sts.fisher_exact for every table shape.
 
-    checked = 0
-    for universe in (6, 50, 500, 3000):
-        for term in (1, 3, 20, 200, universe):
+    Agreement is ~1e-10 relative, not bit-identical: the pmf goes through betaln
+    where scipy's goes through Boost. The bound is loose enough for that rounding
+    and tight enough to catch an algorithmic mistake.
+    """
+    from qenrich._fisher import fisher_pvalues
+
+    tables = []
+    for universe in (6, 50, 500, 3000, 30000):
+        for term in (1, 3, 20, 200, universe // 3, universe):
             if term > universe:
                 continue
-            for size in (1, 5, 50, universe):
+            for size in (1, 5, 50, universe // 4, universe):
                 if size > universe:
                     continue
-                for k in {0, 1, term // 3, term - 1, term, min(term, size), min(term, size) - 1}:
+                for k in {0, 1, term // 3, term // 2, term - 1, term, min(term, size), min(term, size) - 1}:
                     # a real term/set pair always satisfies term + size - k <= universe
                     if not max(0, term + size - universe) <= k <= min(term, size):
                         continue
-                    table = [[k, term - k], [size - k, universe - term - size + k]]
-                    want = sts.fisher_exact(table, alternative="two-sided")[1]
-                    got = _two_sided_p(k, term, size, universe)
-                    assert got == want, (k, term, size, universe, got, want)
-                    checked += 1
-    assert checked > 120
+                    tables.append((k, term, size, universe))
+    assert len(tables) > 250
+    K = np.array([t[1] for t in tables])
+    n = np.array([t[2] for t in tables])
+    N = np.array([t[3] for t in tables])
+    obs = np.array([t[0] for t in tables])
+    for alt in ("greater", "less"):
+        got = fisher_pvalues(K, n, N, obs, alternative=alt)
+        want = np.array([sts.fisher_exact([[k, Kt - k], [s - k, Nt - Kt - s + k]], alternative=alt)[1]
+                         for k, Kt, s, Nt in tables])
+        assert np.allclose(got, want, rtol=1e-9, atol=1e-12), (alt, np.abs(got - want).max())
 
 
-def test_mode_shortcut_skips_scipy_calls(tmp_path, monkeypatch):
-    """Terms on the hypergeometric mode (p == 1) must not reach scipy at all."""
-    import qenrich._enrich as en
+def test_ora_never_calls_scipy_fisher(tmp_path, monkeypatch):
+    """run_ora computes its p-values locally; scipy's per-table call is unused."""
+    import scipy.stats as sps
 
     net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
     _, sets, _ = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
-    calls = []
-    real = sts.fisher_exact
 
-    def counting(*a, **kw):
-        calls.append(a[0])
-        return real(*a, **kw)
+    def boom(*a, **k):
+        raise AssertionError("run_ora must not call sts.fisher_exact")
 
-    monkeypatch.setattr(en.sts, "fisher_exact", counting)
-    results, _, _ = en.run_ora(net, sets, tmin=3)  # 2 sets x 3 terms, universe 6, term size 3
-    # mode = (3+1)*(3+1)//(6+2) = 2: up hits it on GO:0000002, down on GO:0000003
-    assert len(calls) == 4
-    assert results["up"].set_index("term").loc["GO:0000002", "pvalue"] == 1.0
+    monkeypatch.setattr(sps, "fisher_exact", boom)
+    results, _, stats = run_ora(net, sets, tmin=3)  # 2 sets x 3 terms, universe 6, term size 3
+    assert stats["up"]["n_terms"] == 3
+    # all three terms hold query genes, so all three are tested and reported
+    up = results["up"].set_index("term")
+    assert set(up.index) == {"GO:0000001", "GO:0000002", "GO:0000003"}
+    assert (up["pvalue"] <= 1.0).all() and (up["pvalue"] > 0).all()
 
 
-def test_alternative_greater_is_one_sided(tmp_path):
+def test_terms_without_a_query_gene_are_not_tested(tmp_path):
+    """clusterProfiler tests only gene sets holding a query gene; so does run_ora."""
+    net = pd.DataFrame({"source": ["T1", "T1", "T2", "T2"], "target": ["g1", "g2", "g3", "g4"]})
+    results, _, stats = run_ora(net, {"s": ["g1"]}, tmin=1)
+    assert set(results["s"]["term"]) == {"T1"}          # T2 shares no gene -> not tested
+    assert stats["s"]["n_terms"] == 1 and stats["s"]["n_empty"] == 1
+    # and BH runs over the tested terms only, so padj == pvalue for a single test
+    assert results["s"].iloc[0]["padj"] == results["s"].iloc[0]["pvalue"]
+
+
+def test_alternative_less_tests_depletion(tmp_path):
     # universe = g0..g19 (T0 keeps g12..g19 in it); T1 covers 10 of them, T2 only 2
     net = pd.DataFrame({
         "source": ["T1"] * 10 + ["T2"] * 2 + ["T0"] * 8,
@@ -1388,20 +1252,169 @@ def test_alternative_greater_is_one_sided(tmp_path):
     })
     # set hits the net in {g0..g4, g10}: T1 k=5, T2 k=1, set size 6
     sets = {"s": [f"g{i}" for i in range(5)] + ["g10", "outside1", "outside2"]}
-    two = run_ora(net, sets, tmin=1)[0]["s"].set_index("term")
-    greater = run_ora(net, sets, tmin=1, alternative="greater")[0]["s"].set_index("term")
+    default = run_ora(net, sets, tmin=1)[0]["s"].set_index("term")
     less = run_ora(net, sets, tmin=1, alternative="less")[0]["s"].set_index("term")
     for term, k, term_size in (("T1", 5, 10), ("T2", 1, 2)):
         table = [[k, term_size - k], [6 - k, 20 - term_size - 6 + k]]
-        assert abs(greater.loc[term, "pvalue"] - sts.fisher_exact(table, alternative="greater")[1]) < 1e-12
+        assert abs(default.loc[term, "pvalue"] - sts.fisher_exact(table, alternative="greater")[1]) < 1e-12
         assert abs(less.loc[term, "pvalue"] - sts.fisher_exact(table, alternative="less")[1]) < 1e-12
-    assert not np.isclose(greater.loc["T1", "pvalue"], two.loc["T1", "pvalue"])
+    # T1 is enriched, so its depletion p-value is the larger of the two
+    assert less.loc["T1", "pvalue"] > default.loc["T1", "pvalue"]
 
     from qenrich._cli import main
 
     nf = wfile(tmp_path, "n.tsv", NET)
     gl = wfile(tmp_path, "g.txt", GENELIST)
-    assert main(["-i", nf, "--genelist", gl, "--alternative", "greater", "--no-obo", "--tmin", "3",
+    assert main(["-i", nf, "--genelist", gl, "--alternative", "less", "--no-obo", "--tmin", "3",
                  "-o", str(tmp_path / "out")]) == 0
     res = pd.read_csv(tmp_path / "out" / "up_enrichment.tsv", sep="\t")
     assert len(res) == 3  # --no-obo keeps the raw three terms; no propagation to count around
+
+
+def test_ora_empty_net_returns_empty_tables():
+    """An annotation net with no rows must return empty results, not raise."""
+    empty = pd.DataFrame({"source": pd.Series(dtype=str), "target": pd.Series(dtype=str)})
+    results, es_wide, stats = run_ora(empty, {"s": ["G1", "G2"]}, tmin=1)
+    assert results["s"].empty and results["s"].columns.tolist() == [
+        "term", "term_size", "overlap", "genes", "pvalue", "log_or", "padj"]
+    assert stats["s"] == {"n_input": 2, "n_hit": 0, "n_terms": 0, "n_pruned": 0, "n_empty": 0}
+    assert es_wide.empty
+
+
+def test_ora_duplicate_pairs_count_distinct_genes():
+    """A net with repeated (term, gene) rows keeps set semantics: distinct genes."""
+    net = pd.DataFrame({"source": ["T1", "T1", "T1", "T2"], "target": ["g1", "g1", "g2", "g1"]})
+    results, _, stats = run_ora(net, {"s": ["g1"]}, tmin=1)
+    row = results["s"].set_index("term")
+    assert row.loc["T1", "term_size"] == 2  # g1, g2 -> g1 counted once
+    assert row.loc["T1", "overlap"] == 1 and row.loc["T1", "genes"] == "g1"
+    assert stats["s"]["n_terms"] == 2
+
+
+def test_tied_pvalues_keep_term_order():
+    """Terms with identical tables tie exactly; their row order stays alphabetical."""
+    net = pd.DataFrame({
+        "source": ["T2", "T2", "T1", "T1", "T3"],
+        "target": ["g1", "g2", "g1", "g2", "g1"],
+    })
+    # T1 and T2 have the same size and overlap with {g1} -> identical p; T3 is
+    # smaller, and all three rows end up with padj == 1 here, so every one ties
+    results, _, _ = run_ora(net, {"s": ["g1"]}, tmin=1)
+    row = results["s"].set_index("term")
+    assert row.loc["T1", "pvalue"] == row.loc["T2", "pvalue"]
+    assert list(results["s"]["term"]) == ["T1", "T2", "T3"]
+
+
+# ---- propagated-GO net cached next to the parsed objects ----
+def test_propagated_go_cache_roundtrip(tmp_path, capsys):
+    """A second run reads go_propagated.tsv instead of re-propagating."""
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv",
+                  "#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\nG3\tGO:0000003\nG4\tGO:0000003\n")
+    gl = wfile(tmp_path, "g.txt", "s\nG1\nG2\nG3\n")
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "-o", str(tmp_path / "r1")])
+    assert rc == 0
+    cdir = tmp_path / "a.tsv.qenrich"
+    assert (cdir / "go_propagated.npz").is_file() and (cdir / "go_propagated.json").is_file()
+    out = capsys.readouterr().out
+    assert "propagated GO DAG" in out
+    first = (tmp_path / "r1" / "s_enrichment.tsv").read_text()
+
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "-o", str(tmp_path / "r2")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "using propagated GO net" in out
+    assert (tmp_path / "r2" / "s_enrichment.tsv").read_text() == first  # same numbers
+
+
+def test_propagated_go_cache_invalidated_by_obo(tmp_path, capsys):
+    """A different OBO (other file or newer mtime) must re-propagate, not serve the old net."""
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv",
+                  "#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\nG3\tGO:0000003\nG4\tGO:0000003\n")
+    gl = wfile(tmp_path, "g.txt", "s\nG1\nG2\nG3\n")
+    obo1 = wfile(tmp_path, "o1.obo", OBO)
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "--obo", obo1,
+               "-o", str(tmp_path / "r1")])
+    assert rc == 0
+    capsys.readouterr()
+
+    # same OBO, untouched mtime: cache hit
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "--obo", obo1,
+               "-o", str(tmp_path / "r2")])
+    assert "using propagated GO net" in capsys.readouterr().out
+
+    # same file, newer mtime: stale, re-propagates
+    import os
+    os.utime(obo1, (2_000_000_000, 2_000_000_000))
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "--obo", obo1,
+               "-o", str(tmp_path / "r3")])
+    out = capsys.readouterr().out
+    assert "propagated GO DAG" in out and "using propagated" not in out
+
+    # and the re-stashed net is served again
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "--obo", obo1,
+               "-o", str(tmp_path / "r4")])
+    assert "using propagated GO net" in capsys.readouterr().out
+
+
+def test_propagated_go_cache_respects_no_cache(tmp_path, capsys):
+    """--no-cache neither reads nor writes go_propagated.tsv."""
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv", "#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\n")
+    gl = wfile(tmp_path, "g.txt", "s\nG1\nG2\n")
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "--no-cache",
+               "-o", str(tmp_path / "r")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "propagated GO DAG" in out and "using propagated" not in out
+    assert not (tmp_path / "a.tsv.qenrich" / "go_propagated.npz").is_file()
+    assert not (tmp_path / "a.tsv.qenrich").exists()  # --no-cache leaves no cache dir at all
+
+
+def test_net_code_roundtrip(tmp_path):
+    """save_net/load_net keep the pairs, including duplicates and empty nets."""
+    from qenrich._io import load_net, save_net
+
+    df = pd.DataFrame({"source": ["GO:1", "GO:1", "GO:2"], "target": ["g1", "g1", "g2"]})
+    p = tmp_path / "n.npz"
+    save_net(df, p)
+    back = load_net(p)
+    assert list(back.columns) == ["source", "target"]
+    assert back.values.tolist() == df.values.tolist()
+    assert str(back["source"].dtype) == "string"
+
+    empty = pd.DataFrame({"source": pd.Series([], dtype="string"),
+                          "target": pd.Series([], dtype="string")})
+    save_net(empty, tmp_path / "e.npz")
+    out = load_net(tmp_path / "e.npz")
+    assert len(out) == 0 and list(out.columns) == ["source", "target"]
+
+
+def test_cache_without_object_counts_is_migrated(tmp_path, capsys):
+    """A stamp written before per-object counts existed is filled in, not crashed on."""
+    import json
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv", "#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\n")
+    gl = wfile(tmp_path, "g.txt", "s\nG1\nG2\n")
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "-o", str(tmp_path / "r1")])
+    assert rc == 0
+    capsys.readouterr()
+    meta_path = tmp_path / "a.tsv.qenrich" / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    del meta["objects"]  # as an older qenrich would have stamped it
+    meta_path.write_text(json.dumps(meta))
+
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "-o", str(tmp_path / "r2")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "object 'go':" in out  # the listing still reports the go object
+    repaired = json.loads(meta_path.read_text())["objects"]  # stamp repaired in place
+    from qenrich._io import load_object
+    df = load_object(tmp_path / "a.tsv.qenrich", "go")
+    assert repaired["go"] == {"terms": int(df["source"].nunique()),
+                              "genes": int(df["target"].nunique())}

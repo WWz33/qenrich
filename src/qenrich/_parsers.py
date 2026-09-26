@@ -1,8 +1,7 @@
 """Parsers: each mainstream annotation format to ``{object_name: net DataFrame}``.
 
-Every net DataFrame has columns ``source`` (term/family) and ``target`` (gene),
-optionally ``weight``. ORA ignores weights; they are kept only when the source
-format provides a meaningful one (none does for v1).
+Every net DataFrame has two columns: ``source`` (term/family) and ``target``
+(gene).
 """
 
 import re
@@ -10,10 +9,8 @@ import warnings
 
 import pandas as pd
 
-from ._io import open_text
+from ._io import SKIP_CELLS, open_text
 from ._sniff import GO_RE, IPR_RE, KO_RE, PFAM_RE
-
-_SKIP = {"", "-", "NA", "N/A", "None"}
 
 
 def _read_tsv(path: str, **kw) -> pd.DataFrame:
@@ -26,11 +23,11 @@ def _read_tsv(path: str, **kw) -> pd.DataFrame:
 
 def _pairs(rows: list[tuple[str, str]]) -> pd.DataFrame:
     df = pd.DataFrame(sorted(set(rows)), columns=["source", "target"])
-    return df[~df["source"].isin(_SKIP) & ~df["target"].isin(_SKIP)]
+    return df[~df["source"].isin(SKIP_CELLS) & ~df["target"].isin(SKIP_CELLS)]
 
 
 def _split_ids(s: str) -> list[str]:
-    return [t for t in re.split(r"[|,;\s]+", str(s).strip()) if t and t not in _SKIP]
+    return [t for t in re.split(r"[|,;\s]+", str(s).strip()) if t and t not in SKIP_CELLS]
 
 
 def _net(df: pd.DataFrame, source: str, target: str) -> pd.DataFrame:

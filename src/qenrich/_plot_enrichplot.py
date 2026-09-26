@@ -8,7 +8,7 @@ color_utils.R) and ggfun::theme_dose:
     scale = two-colour gradient #327eba (low/significant) -> #e06663 (high)
     with log10 transform (get_enrichplot_color(2) reversed), size = Count via
     scale_size(range=c(3,8)) with pretty breaks, theme_dose. R wraps long
-    labels (yulab.utils::str_wrap); here they are kept in full (LAB_MAX=0).
+    labels (yulab.utils::str_wrap); here they are kept in full.
   - barplot: x = Count, same fill scale and theme.
   - heatplot (no foldChange): black shape-21 dots on a white ground at
     gene x term membership, y = term labels, x = genes.
@@ -21,12 +21,7 @@ import pandas as pd
 
 SIG_LOW = "#327eba"   # smallest p.adjust
 SIG_HIGH = "#e06663"  # largest p.adjust
-LAB_MAX = 0           # 0 = no truncation (full term names)
 FONT = 14             # theme_dose(font.size=14)
-
-
-def _trunc(s: str) -> str:
-    return s if LAB_MAX <= 0 or len(s) <= LAB_MAX else s[:LAB_MAX] + "..."
 
 
 def _theme_dose(ax, title: str) -> None:
@@ -34,7 +29,6 @@ def _theme_dose(ax, title: str) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
 
     ax.set_facecolor("white")
     for side in ax.spines.values():
@@ -48,19 +42,18 @@ def _theme_dose(ax, title: str) -> None:
         lbl.set_color("black")
 
 
-def _sig_scale():
-    """Fill colours + log10 normalisation replicating set_enrichplot_color defaults."""
-    from matplotlib.colors import LinearSegmentedColormap, LogNorm
+def _sig_cmap():
+    """Fill colours replicating set_enrichplot_color defaults."""
+    from matplotlib.colors import LinearSegmentedColormap
 
-    cmap = LinearSegmentedColormap.from_list("enrichplot", [SIG_LOW, SIG_HIGH])
-    return cmap, LogNorm
+    return LinearSegmentedColormap.from_list("enrichplot", [SIG_LOW, SIG_HIGH])
 
 
 def _padj_norm(padj: np.ndarray):
     from matplotlib.colors import LogNorm
 
-    # floor at 1e-16: permutation p-values can underflow to 0.0, which would
-    # stretch a LogNorm to 1e-300 and pin every point to one end
+    # floor at 1e-16: a hypergeometric p-value can underflow to 0.0 in the deep
+    # tail, which would stretch a LogNorm to 1e-300 and pin every point to one end
     lo = max(float(np.nanmin(padj)), 1e-16)
     hi = max(float(np.nanmax(padj)), lo)
     if hi <= lo * 1.001:  # single unique padj: centre it like ggplot's scale expansion
@@ -80,15 +73,9 @@ def _size_map(counts: np.ndarray):
     return to_s, breaks
 
 
-def _disp_len(s: str) -> float:
-    """Display width in latin-char equivalents: CJK glyphs are ~1.7x wider."""
-    return sum(1.7 if ord(c) > 0x2E80 else 1.0 for c in s)
-
-
 def _prep(df: pd.DataFrame, stats: dict, name_of, top: int) -> pd.DataFrame:
     d = df.copy()
     d["Description"] = [name_of(t) or t for t in d["term"]] if name_of else d["term"]
-    d["Description"] = d["Description"].map(_trunc)
     if "Count" not in d.columns:  # ORA tables: Count = overlap
         d["Count"] = d["overlap"]
     if "GeneRatio" not in d.columns:
@@ -105,7 +92,7 @@ def _dotplot(d: pd.DataFrame, path: Path, title: str, figsize=(6.0, 4.0)) -> Non
     from matplotlib.lines import Line2D
 
     d = d.iloc[::-1]  # highest GeneRatio at top
-    cmap, _ = _sig_scale()
+    cmap = _sig_cmap()
     norm = _padj_norm(d["padj"].to_numpy())
     to_s, size_breaks = _size_map(d["Count"].to_numpy())
     fig, ax = plt.subplots(figsize=figsize, dpi=150, layout="tight")
@@ -147,7 +134,7 @@ def _barplot(d: pd.DataFrame, path: Path, title: str, figsize=(6.0, 4.0)) -> Non
     from matplotlib.cm import ScalarMappable
 
     d = d.sort_values("Count", ascending=True)  # highest Count at top
-    cmap, _ = _sig_scale()
+    cmap = _sig_cmap()
     norm = _padj_norm(d["padj"].to_numpy())
     fig, ax = plt.subplots(figsize=figsize, dpi=150, layout="tight")
     ax.barh(d["Description"], d["Count"], color=cmap(norm(d["padj"].to_numpy())), height=0.7)
@@ -182,7 +169,7 @@ def _heatplot(results_dfs: list[pd.DataFrame], path: Path, name_of, top_terms: i
     genes = mat["gene"].value_counts().head(top_genes).index
     mat = mat[mat["gene"].isin(genes)]
     piv = mat.assign(v=1).pivot(index="gene", columns="term", values="v")
-    col_labels = [_trunc(name_of(t) or t) if name_of else _trunc(t) for t in piv.columns]
+    col_labels = [name_of(t) or t for t in piv.columns] if name_of else list(piv.columns)
     fig, ax = plt.subplots(layout="tight", figsize=(1.0 + 0.16 * max(len(g) for g in piv.index) + 0.25 * len(col_labels),
                                     max(3.0, 0.26 * len(piv) + 1.0)), dpi=150)
     ax.scatter(
@@ -209,7 +196,7 @@ def plot_results_enrichplot(
     tag: str = "ep",
 ) -> None:
     """enrichplot-style per-set plots: GeneRatio dotplot, Count barplot, heatplot."""
-    from ._plot import use_cjk_font
+    from ._plot import _disp_len, use_cjk_font
 
     use_cjk_font()
     name_of = (label_map or {}).get
@@ -225,5 +212,5 @@ def plot_results_enrichplot(
         fname = name.replace("/", "_")
         _dotplot(d, outdir / f"{fname}_{tag}_dotplot.png", name, figsize)
         _barplot(d, outdir / f"{fname}_{tag}_barplot.png", name, figsize)
-    # the tag keeps ORA and GSEA heatplots from overwriting each other
+    # the tag keeps the heatplot filename distinct from the per-set plots
     _heatplot(list(results.values()), outdir / f"{tag}_heatplot.png", name_of, top_terms=top)

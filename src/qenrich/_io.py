@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pandas as pd
 
+import numpy as np
+
 from . import __version__
+
+_PROP_STEM = "go_propagated"  # the propagated-GO cache, not an object
+
+SKIP_CELLS = frozenset({"", "-", "NA", "N/A", "nan", "None"})
 
 
 def open_text(path: str | Path):
@@ -17,7 +23,7 @@ def open_text(path: str | Path):
 
 
 def read_names(path: str | Path) -> pd.DataFrame:
-    """Read a multi-column id->names TSV (--desc) verbatim, dropping a header row.
+    """Read a multi-column id->names TSV (--zh TABLE) verbatim, dropping a header row.
 
     For ``go_zh.tsv`` (``ID\\tEnglish\\tChinese``) the caller picks column 2 as
     the English name and column 3 as the Chinese name. A first row whose first
@@ -36,7 +42,11 @@ def cache_dir_for(annot_path: str | Path) -> Path:
 
 
 def save_objects(objects: dict[str, pd.DataFrame], cdir: str | Path, source: str | Path, fmt: str) -> None:
-    """Write each object as ``<cdir>/<name>.tsv`` plus a ``meta.json`` stamp."""
+    """Write each object as ``<cdir>/<name>.tsv`` plus a ``meta.json`` stamp.
+
+    The stamp also carries per-object term/gene counts: the CLI reports them
+    without reading objects a run does not use.
+    """
     cdir = Path(cdir)
     cdir.mkdir(parents=True, exist_ok=True)
     for name, df in objects.items():
@@ -46,17 +56,50 @@ def save_objects(objects: dict[str, pd.DataFrame], cdir: str | Path, source: str
         "mtime": Path(source).stat().st_mtime,
         "format": fmt,
         "version": __version__,
+        "objects": {name: {"terms": int(df["source"].nunique()),
+                           "genes": int(df["target"].nunique())}
+                    for name, df in objects.items()},
     }
     (cdir / "meta.json").write_text(json.dumps(meta))
 
 
+def load_object(cdir: str | Path, name: str) -> pd.DataFrame:
+    """Read one object TSV from a cache/db directory."""
+    return pd.read_csv(Path(cdir) / f"{name}.tsv", sep="\t", dtype=str,
+                       keep_default_na=False, index_col=False)
+
+
 def load_objects(cdir: str | Path) -> dict[str, pd.DataFrame]:
-    """Read back every ``*.tsv`` object in a cache/db directory."""
+    """Read back every ``*.tsv`` object in a cache/db directory.
+
+    The propagated-GO cache is not an object: it is keyed to the raw ``go``
+    object it was built from and read only by the CLI.
+    """
     cdir = Path(cdir)
-    objects = {p.stem: pd.read_csv(p, sep="\t", dtype=str, keep_default_na=False, index_col=False) for p in sorted(cdir.glob("*.tsv"))}
+    objects = {p.stem: load_object(cdir, p.stem)
+               for p in sorted(cdir.glob("*.tsv")) if p.stem != _PROP_STEM}
     if not objects:
         raise FileNotFoundError(f"no .tsv objects in {cdir}")
     return objects
+
+
+def save_net(df: pd.DataFrame, path: str | Path) -> None:
+    """Write a net as integer codes plus the distinct ids they index (npz).
+
+    Reading a 1.8M-row net TSV back costs ~0.5s; the codes load in ~0.05s and
+    rebuild the same string columns through Arrow ``take``.
+    """
+    t_codes, t_uniq = pd.factorize(df["source"])
+    g_codes, g_uniq = pd.factorize(df["target"])
+    np.savez(path, t=t_codes.astype("int32"), g=g_codes.astype("int32"),
+             tu=np.asarray(t_uniq, dtype=str), gu=np.asarray(g_uniq, dtype=str))
+
+
+def load_net(path: str | Path) -> pd.DataFrame:
+    """Read back what :func:`save_net` wrote, as ``string`` columns."""
+    z = np.load(path)
+    return pd.DataFrame({"source": pd.array(z["tu"], dtype="string").take(z["t"]),
+                         "target": pd.array(z["gu"], dtype="string").take(z["g"])})
 
 
 def cache_fresh(cdir: str | Path, source: str | Path, fmt: str | None = None) -> bool:

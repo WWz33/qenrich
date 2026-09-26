@@ -1,17 +1,15 @@
-"""Bridge gene sets to decoupler's ORA (Fisher exact + BH FDR) and GSEA."""
+"""ORA over a term/gene net: a hypergeometric test per term, BH across the tested terms."""
 
 import re
-import sys
 
 import numpy as np
 import pandas as pd
-import scipy.stats as sts
 
-import decoupler as dc
+from ._fisher import fisher_pvalues
 
 
 def _bh(p: np.ndarray) -> np.ndarray:
-    """Benjamini-Hochberg adjusted p-values (same as decoupler's per-row FDR)."""
+    """Benjamini-Hochberg adjusted p-values (the standard step-up, over the tested terms)."""
     p = np.asarray(p, dtype=float)
     m = p.size
     if m == 0:
@@ -24,45 +22,23 @@ def _bh(p: np.ndarray) -> np.ndarray:
     return out
 
 
-def _two_sided_p(k: int, term_size: int, set_size: int, universe: int) -> float:
-    """Two-sided Fisher p-value for the ORA table, identical to ``sts.fisher_exact``.
-
-    scipy returns exactly 1.0 whenever the observed overlap sits on the
-    hypergeometric mode, which is where most terms of a real GO net land (the
-    parent terms carry thousands of genes, so the observed overlap is the most
-    likely one). That branch costs two pmf evaluations per term — the dominant
-    cost of a run at organism scale — so the integer mode comparison
-    short-circuits it first: ``k == mode`` means the two pmf calls would be
-    evaluated at the same argument and compare equal, and scipy's value test
-    (``|pexact - pmode| / max(...) <= 1e-14``) then holds because the mode pmf is
-    bounded below by ~1/(sigma*sqrt(2*pi)) with sigma <= sqrt(N/4), i.e. it cannot
-    underflow for any N that fits in int64. Terms off the mode still go through scipy.
-    """
-    if k == (set_size + 1) * (term_size + 1) // (universe + 2):
-        return 1.0
-    return sts.fisher_exact(
-        [[k, term_size - k], [set_size - k, universe - term_size - set_size + k]],
-        alternative="two-sided",
-    )[1]
-
-
 def run_ora(
     net: pd.DataFrame,
     sets: dict[str, list[str]],
     tmin: int = 5,
     bg: list[str] | None = None,
-    verbose: bool = False,
-    alternative: str = "two-sided",
+    alternative: str = "greater",
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, dict[str, dict]]:
-    """Enrich every gene set against the net (Fisher exact + BH FDR).
+    """Enrich every gene set against the net (hypergeometric test + BH FDR).
 
-    Computed locally with the same formulas as decoupler's ``mt.ora``: the
-    released decoupler <=2.2.0 selects the wrong top-``n_up`` features for the
-    2x2 table, so its es/padj are only trustworthy in the unreleased fix.
+    Reproduces clusterProfiler's ``enrichGO``: the p-value is the one-sided
+    over-representation test ``phyper(k - 1, M, N - M, n, lower.tail = FALSE)``,
+    computed by :mod:`qenrich._fisher`, and BH runs over the terms that hold at
+    least one query gene, which are also the terms reported. Gene sets with no
+    query gene are counted in the statistics but not tested.
 
-    ``alternative`` is passed to scipy: ``two-sided`` (decoupler's choice, the
-    default) counts depletion as well, ``greater`` is the one-sided
-    over-representation test clusterProfiler's ``enrichGO`` computes.
+    ``alternative='less'`` tests depletion instead (P(X <= k)); there is no
+    clusterProfiler counterpart for it.
 
     Returns
     -------
@@ -71,160 +47,99 @@ def run_ora(
     es_wide : pd.DataFrame
         set x term log odds ratios (for barplots).
     stats : dict[str, dict]
-        Per-set run statistics (n_input, n_universe_hit, n_terms, n_pruned).
+        Per-set run statistics (n_input, n_universe_hit, n_terms, n_pruned, n_empty).
     """
     if bg is not None:
         bgset = set(bg)
         net = net[net["target"].isin(bgset)]
         if net.empty:
             raise ValueError("no overlap between annotation and --bg genes")
-    universe = pd.Index(sorted(set(net["target"])))
-    term_targets = net.groupby("source")["target"].apply(lambda s: set(s)).to_dict()
+    universe = pd.Index(sorted(pd.unique(net["target"])))
+    big_n = len(universe)
+    gene_pos = {g: i for i, g in enumerate(universe)}
+    universe_set = set(universe)
+    # One integer code per (term, gene) pair, deduplicated and sorted. Sorted codes
+    # turn each term's gene positions into a contiguous slice, so no per-term
+    # Python set work is needed. (Iterating pandas' Arrow-backed string columns in
+    # Python costs seconds at organism scale, hence pd.unique/pd.factorize and no
+    # set(net["target"]).)
+    gene_codes, gene_uniques = pd.factorize(net["target"])
+    term_codes_raw, term_names = pd.factorize(net["source"])
+    pair_pos_all = np.array([gene_pos[g] for g in gene_uniques], dtype=np.int64)[gene_codes]
+    pairs = term_codes_raw.astype(np.int64) * big_n + pair_pos_all
+    if pairs.size:  # an empty net has no pairs, but the loop below still runs
+        pairs.sort()
+        keep = np.empty(len(pairs), dtype=bool)
+        keep[0] = True
+        np.not_equal(pairs[1:], pairs[:-1], out=keep[1:])
+        pairs = pairs[keep]
+    pair_terms, pair_pos = np.divmod(pairs, big_n)
+    term_sizes = np.bincount(pair_terms, minlength=len(term_names))
+    # +1 so every term's slice is [starts[c], starts[c + 1]); the last boundary is
+    # the pair count
+    term_starts = np.searchsorted(pair_terms, np.arange(len(term_names) + 1))
+    sized_codes = np.where(term_sizes >= tmin)[0]  # terms passing --tmin
+    gene_names = universe.to_numpy()
+
     results: dict[str, pd.DataFrame] = {}
     stats: dict[str, dict] = {}
     es_rows: dict[str, pd.Series] = {}
     for name, genes in sets.items():
-        gs_set = set(genes) & set(universe)
+        gs_set = set(genes) & universe_set
         n_input = len(set(genes))
+        n_pruned = len(term_names) - len(sized_codes)
         if not gs_set:
             results[name] = pd.DataFrame(columns=["term", "term_size", "overlap", "genes", "pvalue", "log_or", "padj"])
-            stats[name] = {"n_input": n_input, "n_hit": 0, "n_terms": 0, "n_pruned": len(term_targets)}
+            stats[name] = {"n_input": n_input, "n_hit": 0, "n_terms": 0,
+                           "n_pruned": n_pruned, "n_empty": len(sized_codes)}
             continue
-        n, big_n = len(gs_set), len(universe)
-        tested = {t: tg for t, tg in term_targets.items() if len(tg) >= tmin}
+        n = len(gs_set)
+        mask = np.zeros(big_n, dtype=bool)
+        mask[[gene_pos[g] for g in gs_set]] = True
+        overlap_all = np.bincount(pair_terms, weights=mask[pair_pos], minlength=len(term_names)).astype(np.int64)
+        # clusterProfiler tests and reports only the gene sets holding a query gene
+        tested_codes = sized_codes[overlap_all[sized_codes] > 0]
+        tested_codes = tested_codes[np.argsort(term_names[tested_codes])]  # sorted(tested)
+        sizes = term_sizes[tested_codes]
+        observed = overlap_all[tested_codes]
+        pvals = fisher_pvalues(
+            sizes,
+            np.full(len(tested_codes), n, dtype=np.int64),
+            np.full(len(tested_codes), big_n, dtype=np.int64),
+            observed,
+            alternative=alternative,
+        )
         recs = []
-        for t, tg in sorted(tested.items()):
-            hit = tg & gs_set
-            k = len(hit)
-            # same table as decoupler's _runora: a=k, b=term-only, c=set-only, d=neither
-            a, b = k, len(tg) - k
-            c, d = n - k, big_n - len(tg) - n + k
-            if alternative == "two-sided":
-                pval = _two_sided_p(k, len(tg), n, big_n)
-            else:
-                pval = sts.fisher_exact([[a, b], [c, d]], alternative=alternative)[1]
+        for pos, code in enumerate(tested_codes):
+            t, K, k = term_names[code], int(sizes[pos]), int(observed[pos])
+            # the 2x2 table: a=k (both), b=term-only, c=set-only, d=neither
+            a, b = k, K - k
+            c, d = n - k, big_n - K - n + k
             lor = np.log((a + 0.5) * (d + 0.5) / ((b + 0.5) * (c + 0.5)))  # Haldane-Anscombe
-            recs.append((t, len(tg), k, ";".join(sorted(hit)), pval, float(lor)))
+            in_term = pair_pos[term_starts[code]:term_starts[code + 1]]  # this term's genes
+            genes_hit = ";".join(sorted(gene_names[in_term[mask[in_term]]]))
+            recs.append((t, K, k, genes_hit, float(pvals[pos]), float(lor)))
         df = pd.DataFrame(recs, columns=["term", "term_size", "overlap", "genes", "pvalue", "log_or"])
         df["padj"] = _bh(df["pvalue"].values)
-        df = df.sort_values("padj").reset_index(drop=True)
+        # stable: integer tables repeat, so many terms tie exactly (same size and
+        # overlap -> same p). Keeping the term order for ties makes the output
+        # deterministic instead of whatever quicksort happens to produce.
+        df = df.sort_values("padj", kind="stable").reset_index(drop=True)
         results[name] = df
-        es_rows[name] = df.set_index("term")["log_or"].reindex(sorted(tested))
-        stats[name] = {"n_input": n_input, "n_hit": len(gs_set), "n_terms": len(tested),
-                       "n_pruned": len(term_targets) - len(tested)}
+        es_rows[name] = df.set_index("term")["log_or"].reindex(sorted(term_names[tested_codes])) if len(df) else pd.Series(dtype=float)
+        stats[name] = {"n_input": n_input, "n_hit": len(gs_set), "n_terms": len(tested_codes),
+                       "n_pruned": n_pruned, "n_empty": len(sized_codes) - len(tested_codes)}
     es_wide = pd.DataFrame(es_rows).T.reindex(columns=sorted({t for df in results.values() for t in df["term"]}))
     return results, es_wide, stats
 
 
-def strip_suffix(sets: dict[str, list[str]], numeric: dict[str, dict[str, float]], net: pd.DataFrame):
+def strip_suffix(sets: dict[str, list[str]], net: pd.DataFrame):
     """Drop ``.1``-style version suffixes from genes and net targets (--strip-suffix)."""
     sets = {k: [re.sub(r"\.\d+$", "", g) for g in v] for k, v in sets.items()}
-    numeric = {k: {re.sub(r"\.\d+$", "", g): w for g, w in v.items()} for k, v in numeric.items()}
     net = net.copy()
     net["target"] = net["target"].astype(str).str.replace(r"\.\d+$", "", regex=True)
     net = net.drop_duplicates(subset=["source", "target"]).reset_index(drop=True)
-    return sets, numeric, net
-
-
-def _leading_edge(vec: dict[str, float], term_targets: set[str]) -> tuple[int, list[str]]:
-    """Count and members of the leading-edge subset (clusterProfiler core_enrichment).
-
-    Replicates decoupler's running sum: genes ranked by descending weight, hits
-    add |w|/sum(|w in set|), misses subtract 1/(N-n); the running-sum peak cuts
-    the leading edge.
-    """
-    genes = sorted(set(vec) & term_targets)
-    order = sorted(vec, key=lambda g: -vec[g])
-    n_all, n_set = len(order), len(genes)
-    if not genes:
-        return 0, []
-    if n_all == n_set:  # term covers all ranked genes; all are leading edge
-        return n_set, genes
-    sum_set = sum(abs(vec[g]) for g in genes)
-    if sum_set == 0.0:  # every hit has weight 0: no direction, no leading edge
-        return 0, []
-    dec = 1.0 / (n_all - n_set)
-    cum = 0.0
-    mx_pos = mx_neg = 0.0
-    j_pos = j_neg = -1
-    for rank, g in enumerate(order):
-        if g in genes:
-            cum += abs(vec[g]) / sum_set
-            if cum > mx_pos:
-                mx_pos, j_pos = cum, rank
-        else:
-            cum -= dec
-            if cum < mx_neg:
-                mx_neg, j_neg = cum, rank
-    if mx_pos > -mx_neg:
-        edge = [g for g in order[: j_pos + 1] if g in genes]
-    else:
-        edge = [g for g in order[j_neg + 1:] if g in genes]
-    return len(edge), edge
-
-
-def run_gsea(
-    net: pd.DataFrame,
-    numeric: dict[str, dict[str, float]],
-    tmin: int = 5,
-    verbose: bool = False,
-) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, dict[str, dict]]:
-    """Enrich ranked vectors (gene -> weight, e.g. log2FC) via ``dc.mt.gsea``.
-
-    Each vector becomes one row over the genes it contains; genes absent from
-    the vector are not ranked (standard GSEA semantics).
-
-    Returns per-set tables (term, term_size, Count = leading-edge size, genes,
-    nes, padj, GeneRatio = Count/setSize as in clusterProfiler), a set x term
-    NES wide frame, and run statistics.
-    """
-    term_targets = net.groupby("source")["target"].apply(lambda s: set(s)).to_dict()
-    universe = set(net["target"])
-    results: dict[str, pd.DataFrame] = {}
-    stats: dict[str, dict] = {}
-    es_rows: dict[str, pd.Series] = {}
-    for name, vec in numeric.items():
-        genes = sorted(set(vec) & universe)
-        stats[name] = {"n_input": len(vec), "n_hit": len(genes), "n_terms": 0, "n_pruned": 0}
-        if not genes:
-            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"])
-            continue
-        if all(w == 0 for w in (vec[g] for g in genes)):
-            # all-zero weights crash decoupler's running sum (division by zero)
-            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"])
-            continue
-        if len(genes) < tmin:
-            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"])
-            stats[name]["n_pruned"] = len(term_targets)
-            continue
-        row = pd.DataFrame(
-            [[vec[g] for g in genes]],
-            index=[name],
-            columns=genes,
-        )
-        try:
-            es, pv = dc.mt.gsea(row, net, tmin=tmin, empty=False, verbose=verbose)
-        except AssertionError as e:  # no term shares >= tmin targets with this row
-            print(f"[qenrich] warning: GSEA set '{name}' skipped ({e})", file=sys.stderr)
-            results[name] = pd.DataFrame(columns=["term", "term_size", "Count", "genes", "nes", "padj", "GeneRatio", "setSize"])
-            continue
-        recs = []
-        for t in es.columns:
-            count, edge = _leading_edge({g: vec[g] for g in genes}, term_targets[t])
-            recs.append((t, len(term_targets[t]), count, ";".join(sorted(edge)),
-                         float(es.loc[name, t]), float(pv.loc[name, t])))
-        df = pd.DataFrame(recs, columns=["term", "term_size", "Count", "genes", "nes", "padj"])
-        df["padj"] = df["padj"].clip(lower=np.finfo(float).eps)  # 0.0 breaks log colour scales
-        # clusterProfiler semantics: GeneRatio = core_enrichment / filtered set size
-        df["GeneRatio"] = df["Count"] / max(len(genes), 1)
-        df["setSize"] = len(genes)
-        df = df.sort_values("padj").reset_index(drop=True)
-        results[name] = df
-        es_rows[name] = es.loc[name]
-        stats[name]["n_terms"] = len(es.columns)
-        stats[name]["n_pruned"] = len(term_targets) - len(es.columns)
-    nes_wide = pd.DataFrame(es_rows).T.reindex(columns=sorted({t for df in results.values() for t in df["term"]}))
-    return results, nes_wide, stats
+    return sets, net
 
 
 def drop_parents(results: dict[str, pd.DataFrame], go, thr: float = 0.05) -> dict[str, pd.DataFrame]:
