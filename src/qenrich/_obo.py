@@ -5,7 +5,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-from ._io import open_text
+from ._io import CACHE_SCHEMA, atomic_write, open_text
 
 import pandas as pd
 
@@ -97,15 +97,16 @@ class GeneOntology:
         """``from_obo``, reusing a pickle of the parsed stanzas when it is fresh.
 
         Parsing the 32MB go-basic.obo costs ~0.45s per run; the pickle is 4MB and
-        loads in ~0.05s. The stamp records the OBO path, its mtime and this
-        qenrich version, so a new OBO release or a new qenrich re-parses. Without
-        a cache dir (net TSV and --db inputs) there is nowhere to put it.
+        loads in ~0.05s. The stamp records the cache schema, the OBO path, its
+        mtime and this qenrich version, so a new OBO release, a new qenrich or a
+        cache-format change re-parses. Without a cache dir (net TSV and --db
+        inputs) there is nowhere to put it.
         """
         if cache_dir is None:
             return cls.from_obo(path)
         p = Path(cache_dir) / "obo.pkl"
-        stamp = {"obo": str(Path(path).resolve()), "obo_mtime": Path(path).stat().st_mtime,
-                 "version": __version__}
+        stamp = {"schema": CACHE_SCHEMA, "obo": str(Path(path).resolve()),
+                 "obo_mtime": Path(path).stat().st_mtime, "version": __version__}
         try:
             with open(p, "rb") as fh:
                 saved, payload = pickle.load(fh)
@@ -114,9 +115,13 @@ class GeneOntology:
         except (OSError, EOFError, ValueError, TypeError, AttributeError, pickle.UnpicklingError):
             pass  # unreadable or stale pickle: parse and rewrite
         go = cls.from_obo(path)
-        try:
-            with open(p, "wb") as fh:
+
+        def dump(q):
+            with open(q, "wb") as fh:
                 pickle.dump((stamp, (go._parents, go._meta, go._alt)), fh, protocol=5)
+
+        try:
+            atomic_write(p, dump)
         except OSError as e:  # read-only cache dir must not abort the run
             print(f"[qenrich] warning: could not write {p} ({e}); continuing", file=sys.stderr)
         return go

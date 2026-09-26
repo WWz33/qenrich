@@ -196,6 +196,7 @@ def plot_results_enrichplot(
     tag: str = "ep",
 ) -> None:
     """enrichplot-style per-set plots: GeneRatio dotplot, Count barplot, heatplot."""
+    from ._io import safe_names
     from ._plot import _disp_len, use_cjk_font
 
     use_cjk_font()
@@ -208,8 +209,9 @@ def plot_results_enrichplot(
     lab_len = max((max((_disp_len(s) for s in d["Description"]), default=0)
                    for d in prepped.values() if len(d)), default=0)
     figsize = (max(6.5, 3.0 + 0.11 * lab_len), max(3.0, 0.28 * top + 1.0))
+    safe = safe_names(results)
     for name, d in prepped.items():
-        fname = name.replace("/", "_")
+        fname = safe[name]
         _dotplot(d, outdir / f"{fname}_{tag}_dotplot.png", name, figsize)
         _barplot(d, outdir / f"{fname}_{tag}_barplot.png", name, figsize)
     # the tag keeps the heatplot filename distinct from the per-set plots

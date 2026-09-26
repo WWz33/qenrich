@@ -1418,3 +1418,200 @@ def test_cache_without_object_counts_is_migrated(tmp_path, capsys):
     df = load_object(tmp_path / "a.tsv.qenrich", "go")
     assert repaired["go"] == {"terms": int(df["source"].nunique()),
                               "genes": int(df["target"].nunique())}
+
+
+# ---- audit fixes: drop_parents vs barplot, cache hygiene, output collisions ----
+def test_prune_es_wide(tmp_path):
+    """es_wide must not keep bars for terms drop_parents removed."""
+    from qenrich._enrich import prune_es_wide
+
+    es_wide = pd.DataFrame({"GO:1": [0.5], "GO:2": [-1.0], "GO:3": [2.0]}, index=["s"])
+    results = {"s": pd.DataFrame({"term": ["GO:2", "GO:3"]})}
+    pruned = prune_es_wide(es_wide, results)
+    assert list(pruned.columns) == ["GO:2", "GO:3"]
+    assert len(pruned) == 1
+    empty = prune_es_wide(es_wide, {"s": pd.DataFrame({"term": pd.Series([], dtype=str)})})
+    assert len(empty.columns) == 0
+
+
+def test_cli_drop_parents_plot_agrees_with_tables(tmp_path, capsys):
+    """--drop-parents --plot: the parent is gone from tables and score matrix."""
+    from qenrich._cli import main
+
+    # branch parent GO:10 with children GO:11/12, plus an unrelated GO:20 so the
+    # parent does not span the whole universe (it could never be significant then)
+    obo = """\
+        format-version: 1.2
+
+        [Term]
+        id: GO:0000010
+        name: branch parent
+
+        [Term]
+        id: GO:0000011
+        name: branch child one
+        is_a: GO:0000010
+
+        [Term]
+        id: GO:0000012
+        name: branch child two
+        is_a: GO:0000010
+
+        [Term]
+        id: GO:0000020
+        name: other branch
+    """
+    annot = wfile(tmp_path, "a.tsv",
+                  "#query\tGOs\nG1\tGO:0000011\nG2\tGO:0000011\n"
+                  "G3\tGO:0000012\nG4\tGO:0000012\nG5\tGO:0000020\nG6\tGO:0000020\n")
+    gl = wfile(tmp_path, "g.txt", "s\nG1\nG2\n")
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "--drop-parents",
+               "--padj", "0.5", "--plot", "--obo", wfile(tmp_path, "o.obo", obo),
+               "-o", str(tmp_path / "out")])  # child padj 0.133, parent 0.4: both significant
+    assert rc == 0
+    out = (tmp_path / "out" / "s_enrichment.tsv").read_text()
+    assert "GO:0000010" not in out  # parent dropped, its significant child kept
+    assert "GO:0000011" in out
+    assert (tmp_path / "out" / "s_barplot.png").is_file()
+    assert (tmp_path / "out" / "s_dotplot.png").is_file()
+
+
+def test_save_objects_removes_stale_owned_objects(tmp_path):
+    """A re-parse that produces fewer objects deletes the old ones it owned."""
+    from qenrich._io import load_objects, save_objects
+
+    cdir = tmp_path / "c"
+    go = pd.DataFrame({"source": ["GO:1"], "target": ["g1"]})
+    kegg = pd.DataFrame({"source": ["K1"], "target": ["g1"]})
+    src = wfile(tmp_path, "a.tsv", "x\n")
+    save_objects({"go": go, "kegg": kegg}, cdir, src, "eggnog")
+    assert (cdir / "kegg.tsv").is_file()
+    # a propagated cache from the previous objects must not survive either
+    (cdir / "go_propagated.npz").write_bytes(b"x")
+    (cdir / "go_propagated.json").write_text("{}")
+    save_objects({"go": go}, cdir, src, "eggnog")
+    assert not (cdir / "kegg.tsv").exists()
+    assert not (cdir / "go_propagated.npz").exists()
+    assert set(load_objects(cdir)) == {"go"}
+
+
+def test_foreign_tsv_in_db_survives_resave(tmp_path):
+    """A user's own TSV in a --db dir is not manifest-owned: resaving keeps it."""
+    from qenrich._io import load_objects, save_objects
+
+    cdir = tmp_path / "db"
+    cdir.mkdir()
+    go = pd.DataFrame({"source": ["GO:1"], "target": ["g1"]})
+    (cdir / "mynet.tsv").write_text("source\ttarget\nGO:9\tg9\n")  # no stamp lists it
+    save_objects({"go": go}, cdir, wfile(tmp_path, "a.tsv", "x\n"), "eggnog")
+    assert (cdir / "mynet.tsv").is_file()
+    assert set(load_objects(cdir)) == {"go", "mynet"}
+
+
+def test_empty_parse_poisons_no_cache(tmp_path, capsys):
+    """A parse with no objects errors before writing any cache."""
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv", "#query\tGOs\nG1\t\nG2\t \n")  # GOs column, no ids
+    gl = wfile(tmp_path, "g.txt", "s\nG1\n")
+    rc = main(["-i", annot, "--genelist", gl])
+    assert rc == 1
+    assert "no annotations found" in capsys.readouterr().err
+    assert not (tmp_path / "a.tsv.qenrich").exists()
+
+
+def test_prop_stamp_rejects_format_and_size_switch(tmp_path):
+    """The propagated net is keyed to the source stamp's format and size too."""
+    import json
+
+    from qenrich._cli import _prop_cache_fresh, _stamp_prop_cache
+    from qenrich._io import save_objects
+
+    src = wfile(tmp_path, "a.tsv", "x\n")
+    cdir = tmp_path / "a.tsv.qenrich"
+    save_objects({"go": pd.DataFrame({"source": ["GO:1"], "target": ["g1"]})},
+                 cdir, src, "eggnog")
+    prop = cdir / "go_propagated.npz"
+    prop.write_bytes(b"x")
+    _stamp_prop_cache(prop, wfile(tmp_path, "o.obo", OBO))
+    assert _prop_cache_fresh(prop, tmp_path / "o.obo")
+
+    meta_path = cdir / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["format"] = "generic"  # same file, different parse
+    meta_path.write_text(json.dumps(meta))
+    assert not _prop_cache_fresh(prop, tmp_path / "o.obo")
+
+    meta["format"] = "eggnog"
+    meta["size"] = meta["size"] + 1  # content swapped under a preserved mtime
+    meta_path.write_text(json.dumps(meta))
+    assert not _prop_cache_fresh(prop, tmp_path / "o.obo")
+
+
+def test_corrupt_prop_cache_recovers(tmp_path, capsys):
+    """A truncated go_propagated.npz warns and rebuilds instead of failing."""
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv", "#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\n")
+    gl = wfile(tmp_path, "g.txt", "s\nG1\nG2\n")
+    obo = wfile(tmp_path, "o.obo", OBO)
+    assert main(["-i", annot, "--genelist", gl, "--tmin", "1", "--obo", obo,
+                 "-o", str(tmp_path / "r1")]) == 0
+    capsys.readouterr()
+    (tmp_path / "a.tsv.qenrich" / "go_propagated.npz").write_bytes(b"not an npz")
+    assert main(["-i", annot, "--genelist", gl, "--tmin", "1", "--obo", obo,
+                 "-o", str(tmp_path / "r2")]) == 0
+    err = capsys.readouterr().err
+    assert "unreadable" in err and "re-propagating" in err
+    assert main(["-i", annot, "--genelist", gl, "--tmin", "1", "--obo", obo,
+                 "-o", str(tmp_path / "r3")]) == 0
+    assert "using propagated GO net" in capsys.readouterr().out
+
+
+def test_cache_fresh_detects_size_swap(tmp_path):
+    """Content swapped under a preserved mtime must not read as fresh."""
+    import os
+
+    from qenrich._io import cache_dir_for, cache_fresh, save_objects
+
+    src = tmp_path / "a.tsv"
+    src.write_text("#query\tGOs\nG1\tGO:0000001\n")
+    cdir = cache_dir_for(src)
+    save_objects({"go": pd.DataFrame({"source": ["GO:0000001"], "target": ["G1"]})},
+                 cdir, src, "eggnog")
+    assert cache_fresh(cdir, src, "eggnog")
+    src.write_text("#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000002\n")  # different content
+    os.utime(src, (1735689600, 1735689600))
+    assert not cache_fresh(cdir, src, "eggnog")
+
+
+def test_safe_names_no_crosswrite(tmp_path, capsys):
+    """Sets "a/b" and "a_b" get distinct files instead of overwriting each other."""
+    from qenrich._cli import main
+
+    annot = wfile(tmp_path, "a.tsv", "#query\tGOs\nG1\tGO:0000001\nG2\tGO:0000001\n")
+    gl = wfile(tmp_path, "g.txt", "a/b\ta_b\nG1\tG2\n")
+    rc = main(["-i", annot, "--genelist", gl, "--tmin", "1", "--plot",
+               "-o", str(tmp_path / "out")])
+    assert rc == 0
+    outdir = tmp_path / "out"
+    assert (outdir / "a_b_enrichment.tsv").is_file()
+    assert (outdir / "a_b#2_enrichment.tsv").is_file()
+    assert (outdir / "a_b_barplot.png").is_file()
+    assert (outdir / "a_b#2_barplot.png").is_file()
+
+
+def test_barplot_all_zero_scores(tmp_path):
+    """A row of identical scores (all zero) must not break TwoSlopeNorm."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from qenrich._plot import _barplot
+
+    es = pd.DataFrame(0.0, index=["s"], columns=["GO:1", "GO:2", "GO:3"])
+    fig, ax = plt.subplots()
+    _barplot(fig, ax, es, "s")
+    fig.savefig(tmp_path / "zero.png")
+    plt.close(fig)
+    assert (tmp_path / "zero.png").stat().st_size > 0

@@ -150,3 +150,13 @@ def drop_parents(results: dict[str, pd.DataFrame], go, thr: float = 0.05) -> dic
         keep = [t for t in df["term"] if not (go.children(t) & sig)]
         out[name] = df[df["term"].isin(keep)].reset_index(drop=True)
     return out
+
+
+def prune_es_wide(es_wide: pd.DataFrame, results: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Restrict the score matrix to the terms ``results`` still reports.
+
+    run_ora builds it over every tested term; drop_parents removes parents from
+    the tables, and the barplots must not keep bars the TSVs no longer list.
+    """
+    cols = sorted({t for df in results.values() for t in df["term"]})
+    return es_wide.reindex(columns=cols)

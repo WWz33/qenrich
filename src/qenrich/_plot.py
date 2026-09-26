@@ -25,6 +25,8 @@ def _set_limits(vmin, vcenter, vmax, values: np.ndarray) -> tuple[float, float, 
         vmin = -vmax
     if vcenter >= vmax:
         vmax = -vmin
+    if vmin == vmax:  # every plotted score identical (e.g. all zero): keep the norm valid
+        vmin, vmax = vmin - 1.0, vmax + 1.0
     return vmin, vcenter, vmax
 
 
@@ -129,8 +131,10 @@ def plot_results(outdir: str | Path, results: dict, es_wide: pd.DataFrame, label
 
     use_cjk_font()  # term labels may be Chinese (--zh table.tsv)
 
+    from ._io import safe_names
+
     outdir = Path(outdir)
-    safe = {name: name.replace("/", "_") for name in results}
+    safe = safe_names(results)
     labels = _unique_label_map(es_wide.columns, label_map) if label_map else None
     if labels:
         es_wide = es_wide.rename(columns=labels)

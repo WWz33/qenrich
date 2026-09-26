@@ -5,12 +5,14 @@ import json
 import re
 import sys
 from pathlib import Path
+from zipfile import BadZipFile
 
 import pandas as pd
 
 from . import __version__
 from ._genelist import _WEIGHTED_CELL
-from ._io import cache_dir_for, cache_fresh, load_net, load_object, open_text, read_names, save_net, save_objects
+from ._io import CACHE_SCHEMA, _PROP_STEM, atomic_write, cache_dir_for, cache_fresh, load_net, \
+    load_object, open_text, read_names, safe_names, save_net, save_objects
 from ._parsers import PARSERS
 from ._plot import plot_heatmap, plot_results
 from ._plot_enrichplot import plot_results_enrichplot
@@ -76,14 +78,18 @@ def _resolve_input(args) -> tuple[str, _Objects, str, Path | None]:
         if fmt == "net":
             return "net", _InMemory(PARSERS["net"](inp)), "net", None
         cdir = cache_dir_for(inp)
+        objects = None
         if not no_cache and cache_fresh(cdir, inp, fmt) and not args.eggnog_lvl:
-            print(f"[qenrich] using cache: {cdir}")
-            names = sorted(p.stem for p in cdir.glob("*.tsv") if p.stem != "go_propagated")
-            counts = _cache_counts(cdir, names)
-            objects = _FromCache(cdir, names, counts)
-        else:
+            names = _cache_names(cdir)
+            if names:  # a stamp whose objects are all missing is no cache at all
+                print(f"[qenrich] using cache: {cdir}")
+                counts = _cache_counts(cdir, names)
+                objects = _FromCache(cdir, names, counts)
+        if objects is None:
             kwargs = {"annot_lvl": args.eggnog_lvl} if fmt == "eggnog" else {}
             parsed = PARSERS[fmt](inp, **kwargs)
+            if not parsed:  # before save_objects: an empty parse must not poison the cache
+                raise ValueError(f"no annotations found in {inp}")
             if args.eggnog_lvl:  # don't cache level-filtered results
                 print("[qenrich] parsed (level-filtered, not cached)")
             elif no_cache:
@@ -95,8 +101,6 @@ def _resolve_input(args) -> tuple[str, _Objects, str, Path | None]:
                 except OSError as e:  # read-only input dir must not abort the run
                     print(f"[qenrich] warning: could not write cache {cdir} ({e}); continuing",
                           file=sys.stderr)
-            if not parsed:
-                raise ValueError(f"no annotations found in {inp}")
             objects = _InMemory(parsed)
         for k, c in objects.counts.items():
             if c.get("terms") is None:  # stamp without counts: name the object only
@@ -114,8 +118,24 @@ def _resolve_input(args) -> tuple[str, _Objects, str, Path | None]:
         f"-i must be an existing file or an object name in --db (looked for {obj_file})")
 
 
-_PROP_TSV = "go_propagated.npz"
+_PROP_NPZ = "go_propagated.npz"
 _PROP_META = "go_propagated.json"
+
+
+def _cache_names(cdir: Path) -> list[str]:
+    """Object names a fresh cache serves: the stamp's manifest, not the directory.
+
+    TSVs a previous parse left behind (a --format switch, an annotation whose
+    objects changed) must not stay selectable; names whose file went missing are
+    dropped. A legacy stamp without a manifest falls back to the directory.
+    """
+    try:
+        named = sorted(json.loads((cdir / "meta.json").read_text()).get("objects", {}))
+    except (OSError, json.JSONDecodeError):
+        named = []
+    if not named:
+        named = sorted(p.stem for p in cdir.glob("*.tsv") if p.stem != _PROP_STEM)
+    return [n for n in named if (cdir / f"{n}.tsv").is_file()]
 
 
 def _cache_counts(cdir: Path, names: list[str]) -> dict[str, dict]:
@@ -149,8 +169,9 @@ def _prop_cache_fresh(prop_path: Path, obo_path: str) -> bool:
     """True when the cached propagated net was built from this net, OBO and qenrich.
 
     The propagated net is a function of the parsed annotation, the OBO and the
-    code, so the stamp carries all three: the annotation cache's own stamp (source
-    mtime + version, written by :func:`save_objects`) plus the OBO path and mtime.
+    code, so the stamp carries the annotation cache's own stamp (source mtime,
+    size, format and version -- a ``--format`` switch re-parses the same file)
+    plus the cache schema, the OBO path and its mtime.
     """
     meta = prop_path.parent / _PROP_META
     if not meta.is_file():
@@ -158,10 +179,13 @@ def _prop_cache_fresh(prop_path: Path, obo_path: str) -> bool:
     try:
         stamp = json.loads(meta.read_text())
         source = json.loads((prop_path.parent / "meta.json").read_text())
-        return (stamp["obo"] == str(Path(obo_path).resolve())
+        return (stamp.get("schema") == CACHE_SCHEMA
+                and stamp["obo"] == str(Path(obo_path).resolve())
                 and stamp["obo_mtime"] == Path(obo_path).stat().st_mtime
                 and stamp["version"] == __version__
                 and stamp["source_mtime"] == source.get("mtime")
+                and stamp["source_size"] == source.get("size")
+                and stamp["source_format"] == source.get("format")
                 and stamp["source_version"] == source.get("version"))
     except (KeyError, json.JSONDecodeError, OSError):
         return False
@@ -170,13 +194,16 @@ def _prop_cache_fresh(prop_path: Path, obo_path: str) -> bool:
 def _stamp_prop_cache(prop_path: Path, obo_path: str) -> None:
     source = json.loads((prop_path.parent / "meta.json").read_text())
     stamp = {
+        "schema": CACHE_SCHEMA,
         "obo": str(Path(obo_path).resolve()),
         "obo_mtime": Path(obo_path).stat().st_mtime,
         "version": __version__,
         "source_mtime": source.get("mtime"),
+        "source_size": source.get("size"),
+        "source_format": source.get("format"),
         "source_version": source.get("version"),
     }
-    (prop_path.parent / _PROP_META).write_text(json.dumps(stamp))
+    atomic_write(prop_path.parent / _PROP_META, lambda p: p.write_text(json.dumps(stamp)))
 
 
 def _bundled_obo() -> str | None:
@@ -244,7 +271,7 @@ def _name_columns(df: pd.DataFrame, en_of, zh_of) -> pd.DataFrame:
 
 
 def cmd_enrich(args) -> int:
-    from ._enrich import drop_parents, run_ora, strip_suffix
+    from ._enrich import drop_parents, prune_es_wide, run_ora, strip_suffix
     from ._genelist import read_genelist
     from ._obo import GeneOntology
 
@@ -266,18 +293,25 @@ def cmd_enrich(args) -> int:
         args.obo = None
     obo_path = None if args.no_obo else (args.obo or _bundled_obo())
     cacheable = not args.no_cache and not args.eggnog_lvl
-    prop_path = cdir / _PROP_TSV if (cdir is not None and cacheable) else None
+    prop_path = cdir / _PROP_NPZ if (cdir is not None and cacheable) else None
     obo_cdir = cdir if cacheable else None  # --no-cache writes nothing, OBO pickle included
     # propagation is deterministic in (net, OBO, qenrich), so a cached result can
     # stand in for the raw net entirely when the feature is the go object it was
     # built from
     prop_fresh = (prop_path is not None and prop_path.is_file() and obo_path is not None
                   and _prop_cache_fresh(prop_path, obo_path))
+    net = None
     if prop_fresh and feature == "go":
-        net = load_net(prop_path)
-        go = GeneOntology.cached(obo_path, obo_cdir)
-        print(f"[qenrich] using propagated GO net: {prop_path}")
-    else:
+        try:
+            net = load_net(prop_path)
+            go = GeneOntology.cached(obo_path, obo_cdir)
+            print(f"[qenrich] using propagated GO net: {prop_path}")
+        except (OSError, ValueError, KeyError, IndexError, EOFError, BadZipFile) as e:
+            # corrupt or foreign npz: rebuild it instead of failing the run
+            print(f"[qenrich] warning: {prop_path} unreadable ({e}); re-propagating",
+                  file=sys.stderr)
+            go, prop_fresh = None, False
+    if net is None:
         net = objects.load(feature)
     counts = objects.counts.get(feature) or {}
     print(f"[qenrich] enriching feature: {feature} ("
@@ -360,6 +394,7 @@ def cmd_enrich(args) -> int:
     summary = []
 
     def report(results, stats, tag):
+        safe = safe_names(results)
         for name, df in results.items():
             s = stats[name]
             if s["n_input"] and s["n_hit"] < 0.5 * s["n_input"]:
@@ -374,8 +409,7 @@ def cmd_enrich(args) -> int:
             if d.empty:
                 print(f"[qenrich] set '{name}' ({tag}): no terms to report ({detail})")
                 continue
-            safe = name.replace("/", "_")  # set names may contain / (header cells)
-            d.to_csv(outdir / f"{safe}_{tag}.tsv", sep="\t", index=False)
+            d.to_csv(outdir / f"{safe[name]}_{tag}.tsv", sep="\t", index=False)
             d = d.copy()
             d.insert(0, "set", name)
             summary.append(d)
@@ -398,6 +432,7 @@ def cmd_enrich(args) -> int:
         if args.drop_parents:
             if go:
                 results = drop_parents(results, go, thr=args.padj)
+                es_wide = prune_es_wide(es_wide, results)
                 print(f"[qenrich] dropped parent terms with significant children (padj<{args.padj})")
             else:
                 print("[qenrich] warning: --drop-parents needs GO terms from an OBO (not --no-obo), ignoring",
