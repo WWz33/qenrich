@@ -63,7 +63,7 @@ qenrich -i emapper.annotations.tsv --genelist gene_list.txt --no-cache
 qenrich -i emapper.annotations.tsv --genelist gene_list.txt --alternative less
 ```
 
-`gene_list.txt` 空白或制表符分隔，一列一个基因集。表头自动识别，列名即集合名（无表头记为 `set1..setN`）。`gene,3.2` 这种带权单元格只取基因 id、丢掉权重，并在 stderr 提一句。`.gz` 直接读取。
+`gene_list.txt` 空白或制表符分隔，一列一个基因集。表头自动识别，列名即集合名（无表头记为 `set1..setN`）。`.gz` 直接读取。
 
 纯 ID 列：
 
@@ -83,7 +83,7 @@ Glyma.01G000200,1.8
 Glyma.01G000300,-0.5
 ```
 
-每个集合写入 `<set>_enrichment.tsv`，合并为 `summary.tsv`。英文 `name` 来自内置 OBO。`--zh` 多出一列 `name_zh`，图上标签也用中文；`--zh 表格.tsv` 合并自定义表（第 2 列英文、第 3 列中文），覆盖 OBO 没有的 id（KEGG、Pfam、InterPro）或个别条目：
+每个集合写入 `<set>_enrichment.tsv`，合并为 `summary.tsv`。英文 `name` 来自内置 OBO。
 
 ```
 term          name                          name_zh          term_size  overlap  genes           pvalue    log_or  padj
@@ -139,11 +139,11 @@ qenrich -i data/format/emapper.annotations.tsv \
 
 `--tmin`（默认 5）丢弃目标基因过少的 term；小注释集调低。
 
-`--alternative` 选择 ORA 的检验。默认 `greater` 是单侧富集检验 P(X >= k)；`less` 是 P(X <= k)，用来测缺失。两个方向都可以看 `log_or` 的符号。
+`--alternative` 选择 ORA 的检验。默认 `greater` 是单侧富集检验 P(X >= k)；`less` 是 P(X <= k)，用来测缺失。
 
-解析结果缓存在注释文件旁边（`<file>.qenrich/`），GO 运行还会在里面缓存传播后的 net 与解析好的 OBO。注释文件、格式、OBO 或 qenrich 版本变化时，失效的部分会重新生成；`--no-cache` 不读也不写缓存。
+解析结果、传播后的 net 和解析好的 OBO 缓存在注释文件旁边（`<file>.qenrich/`）；注释文件、格式、OBO 或 qenrich 版本变化时失效。`--no-cache` 不读也不写缓存。
 
-`--padj`（默认 0.05）用于统计显著 term 数目，也决定 `--drop-parents` 折叠哪些父 term；它**不会**过滤 `summary.tsv` 或各 set 的结果表，这些文件保留所有至少含一个集合基因的 term，按 padj 排序。低于 `--tmin` 的 term、以及与集合没有共同基因的 term 既不检验也不输出，所以 BH 的分母就是输出表里的行数。
+`--padj`（默认 0.05）用于统计显著 term 数目，也决定 `--drop-parents` 折叠哪些父 term；它**不会**过滤 `summary.tsv` 或各 set 的结果表，这些文件保留所有至少含一个集合基因的 term，按 padj 排序。低于 `--tmin` 的 term、以及与集合没有共同基因的 term 既不检验也不输出。
 
 `--bg` 只作用于 ORA 的背景集：只有该文件里的基因进入 universe。
 
