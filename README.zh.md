@@ -74,15 +74,6 @@ Glyma.01G000200 Glyma.01G000500
 Glyma.01G000300 Glyma.01G000600
 ```
 
-带权单元格（权重会被忽略）：
-
-```
-deg_up
-Glyma.01G000100,3.2
-Glyma.01G000200,1.8
-Glyma.01G000300,-0.5
-```
-
 每个集合写入 `<set>_enrichment.tsv`，合并为 `summary.tsv`。英文 `name` 来自内置 OBO。
 
 ```

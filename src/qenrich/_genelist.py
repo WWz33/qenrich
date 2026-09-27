@@ -1,14 +1,8 @@
 """Read gene list files where each column is one gene set."""
 
-import re
 from pathlib import Path
 
 from ._io import SKIP_CELLS, open_text
-
-# A cell may carry a weight (``gene,3.2``): the weight is dropped, the id kept.
-# The id half must not contain a separator, otherwise a bare comma list whose last
-# token is numeric ("7157,672,675,1234") would lose three of its four genes.
-_WEIGHTED_CELL = re.compile(r"^([^\s,;]+?)[,;]([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)$")
 
 
 def _split_line(line: str) -> list[str]:
@@ -38,15 +32,9 @@ def _has_header(rows: list[list[str]]) -> bool:
     return True
 
 
-def _gene_id(cell: str) -> str:
-    """The gene id of a cell, dropping a ``gene,weight`` half if there is one."""
-    m = _WEIGHTED_CELL.match(cell)
-    return m.group(1) if m else cell
-
-
 def read_genelist(
     path: str | Path, no_header: bool = False
-) -> tuple[list[str], dict[str, list[str]], list[str]]:
+) -> tuple[list[str], dict[str, list[str]]]:
     """Parse a gene list file: one column per gene set.
 
     Parameters
@@ -63,9 +51,6 @@ def read_genelist(
         The detected column names.
     sets : dict[str, list[str]]
         Gene sets (for ORA), ordered and de-duplicated.
-    weighted : list[str]
-        Columns where at least one cell carried a ``gene,weight`` pair. The
-        weights are dropped; the caller warns about it.
     """
     rows = []
     with open_text(path) as fh:
@@ -97,21 +82,12 @@ def read_genelist(
     if len(set(header)) != len(header):
         raise ValueError(f"duplicate set names in gene list header: {header}")
     sets: dict[str, list[str]] = {}
-    weighted: list[str] = []
     for j, name in enumerate(header):
         seen: list[str] = []
-        cols_weighted = False
         for r in data:
             c = r[j].strip()
-            if c in SKIP_CELLS:
+            if c in SKIP_CELLS or c in seen:
                 continue
-            g = _gene_id(c)
-            if g != c:
-                cols_weighted = True
-            if g in SKIP_CELLS or g in seen:
-                continue
-            seen.append(g)
-        if cols_weighted:
-            weighted.append(name)
+            seen.append(c)
         sets[name] = seen
-    return header, sets, weighted
+    return header, sets

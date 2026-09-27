@@ -74,15 +74,6 @@ Glyma.01G000200 Glyma.01G000500
 Glyma.01G000300 Glyma.01G000600
 ```
 
-A `gene,weight` column (weights ignored):
-
-```
-deg_up
-Glyma.01G000100,3.2
-Glyma.01G000200,1.8
-Glyma.01G000300,-0.5
-```
-
 Each set is written to `<set>_enrichment.tsv` and merged into `summary.tsv`, ordered by `padj`. English `name` comes from the bundled OBO.
 
 ```

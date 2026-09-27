@@ -114,12 +114,12 @@ def test_obo_propagation_and_meta(tmp_path):
 
 # -------------------------------------------------------------- genelist ----
 def test_genelist_header_and_noheader(tmp_path):
-    _, sets, weighted = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
-    assert set(sets) == {"up", "down"} and not weighted
+    _, sets = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
+    assert set(sets) == {"up", "down"}
     assert sets["up"] == ["Gene01", "Gene02", "Gene03"]
-    _, sets, _ = read_genelist(wfile(tmp_path, "l2.txt", GENELIST_NOHEADER))
+    _, sets = read_genelist(wfile(tmp_path, "l2.txt", GENELIST_NOHEADER))
     assert set(sets) == {"Gene01", "Gene04"}  # all-unique ids: auto-detect must be forced with --no-header
-    _, sets, _ = read_genelist(wfile(tmp_path, "l3.txt", GENELIST_NOHEADER), no_header=True)
+    _, sets = read_genelist(wfile(tmp_path, "l3.txt", GENELIST_NOHEADER), no_header=True)
     assert set(sets) == {"set1", "set2"}
 
 
@@ -154,7 +154,7 @@ def _bh(pvals):
 
 def test_ora_matches_fisher_exact(tmp_path):
     net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
-    _, sets, _ = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
+    _, sets = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
     results, es_wide, stats = run_ora(net, sets, tmin=3)
     up = results["up"]
     # universe=6 genes, three 3-gene terms (GO:1 {G1,G2,G3}, GO:2 {G1,G3,G4}, GO:3 {G1,G5,G6})
@@ -201,7 +201,7 @@ DESC = "K00001\tpyruvate kinase\nK00002\thexokinase\n"
 def test_crlf_genelist_and_gaf(tmp_path):
     from tests.fixtures import GAF as GAF_TXT
 
-    _, sets, _ = read_genelist(wfile(tmp_path, "crlf.txt", GENELIST_CRLF))
+    _, sets = read_genelist(wfile(tmp_path, "crlf.txt", GENELIST_CRLF))
     assert sets["up"] == ["Gene01", "Gene02", "Gene03"]
     objs = PARSERS["gaf"](wfile(tmp_path, "crlf.gaf", GAF_TXT.replace("\n", "\r\n")))
     assert set(objs["go"]["target"]) == {"Gene01", "Gene02", "Gene03"}
@@ -268,29 +268,6 @@ def test_obo_children(tmp_path):
     go = GeneOntology.from_obo(wfile(tmp_path, "go.obo", OBO))
     assert go.children("GO:0000001") == {"GO:0000002", "GO:0000003"}
     assert go.children("GO:0000003") == set()
-
-
-def test_cli_end_to_end_weighted_column_and_flags(tmp_path, capsys):
-    """A gene,weight column is accepted; the weights are dropped with a note."""
-    from qenrich._cli import main
-
-    d = tmp_path / "run"
-    d.mkdir()
-    (d / "net.tsv").write_text(NET)
-    (d / "gl.txt").write_text("up\tweighted\nGene01\tGene01,2.0\nGene02\tGene03,-1.5\nGene03\tGene05,0.8\n")
-    rc = main(["-i", str(d / "net.tsv"), "--genelist", str(d / "gl.txt"), "--tmin", "1",
-               "-o", str(d / "out"), "--strip-suffix"])
-    assert rc == 0
-    assert (d / "out" / "up_enrichment.tsv").is_file()
-    assert (d / "out" / "weighted_enrichment.tsv").is_file()
-    assert (d / "out" / "summary.tsv").is_file()
-    err = capsys.readouterr().err
-    assert "weights are ignored" in err and "'weighted'" in err
-    # the id half is what gets tested: every hit is one of those three ids, not
-    # the "id,weight" text
-    res = pd.read_csv(d / "out" / "weighted_enrichment.tsv", sep="\t")
-    hit = {g for cell in res["genes"] for g in str(cell).split(";") if g}
-    assert hit == {"Gene01", "Gene03", "Gene05"}
 
 
 EGGNOG_V2 = (
@@ -496,7 +473,7 @@ def test_ora_bg_strip_suffix(tmp_path):
 # ---- header with trailing tab (empty padded cell) ----
 def test_genelist_trailing_tab_header(tmp_path):
     text = "SetA\tSetB\t\nGene01\tGene04\t\nGene02\tGene05\t\n"
-    _, sets, _ = read_genelist(wfile(tmp_path, "tt.txt", text))
+    _, sets = read_genelist(wfile(tmp_path, "tt.txt", text))
     assert set(sets) == {"SetA", "SetB"}  # header detected despite trailing tab
     assert sets["SetA"] == ["Gene01", "Gene02"]
 
@@ -534,7 +511,7 @@ def test_generic_headerless_first_row_kept(tmp_path):
 
 # ---- single-row gene list is a header-only file ----
 def test_genelist_single_row_header(tmp_path):
-    _, sets, _ = read_genelist(wfile(tmp_path, "one.txt", "DE_up\tDE_down\n"))
+    _, sets = read_genelist(wfile(tmp_path, "one.txt", "DE_up\tDE_down\n"))
     assert set(sets) == {"DE_up", "DE_down"} and sets["DE_up"] == []
 
 
@@ -639,7 +616,7 @@ def test_ora_set_equals_universe(tmp_path):
 
 def test_ora_pvalue_padj_consistent(tmp_path):
     net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
-    _, sets, _ = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
+    _, sets = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
     up = run_ora(net, sets, tmin=3)[0]["up"]
     sig = up[up["pvalue"] < 0.05]
     assert (sig["padj"] >= sig["pvalue"]).all()  # BH never shrinks p-values
@@ -692,26 +669,13 @@ def test_cli_obo_via_object_db(tmp_path, capsys):
 
 # ===================== regression tests =====================
 
-def test_read_bg_weighted_pairs_and_comma_lists(tmp_path):
-    """--bg keeps the id from gene,weight / gene;weight but still splits bare
-    comma/semicolon lists, including all-numeric ones."""
+def test_read_bg_comma_lists(tmp_path):
+    """--bg splits bare comma/semicolon lists, including all-numeric ones."""
     from qenrich._cli import _read_bg
 
-    p = wfile(tmp_path, "bg.txt",
-              "Gene01,3.2\nGene02;1.5\nGene03,Gene04\nGene05\n7157,672,675,1234\ng1;g2\n")
-    assert _read_bg(p) == ["Gene01", "Gene02", "Gene03", "Gene04", "Gene05",
+    p = wfile(tmp_path, "bg.txt", "Gene03,Gene04\nGene05\n7157,672,675,1234\ng1;g2\n")
+    assert _read_bg(p) == ["Gene03", "Gene04", "Gene05",
                            "7157", "672", "675", "1234", "g1", "g2"]
-
-
-def test_num_cell_regex_rejects_separator_in_id():
-    """The gene,weight pattern must not swallow a separator inside the id half."""
-    from qenrich._genelist import _WEIGHTED_CELL
-
-    assert _WEIGHTED_CELL.match("Gene01,3.2").group(1) == "Gene01"
-    assert _WEIGHTED_CELL.match("Gene01;3.2").group(1) == "Gene01"
-    assert _WEIGHTED_CELL.match("Gene01,-1.5e-3").group(1) == "Gene01"
-    assert _WEIGHTED_CELL.match("7157,672,675,1234") is None
-    assert _WEIGHTED_CELL.match("a,b,c") is None
 
 
 def test_plot_unique_label_map_disambiguates():
@@ -1220,7 +1184,7 @@ def test_ora_never_calls_scipy_fisher(tmp_path, monkeypatch):
     import scipy.stats as sps
 
     net = PARSERS["net"](wfile(tmp_path, "n.tsv", NET))["net"]
-    _, sets, _ = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
+    _, sets = read_genelist(wfile(tmp_path, "l.txt", GENELIST))
 
     def boom(*a, **k):
         raise AssertionError("run_ora must not call sts.fisher_exact")

@@ -10,7 +10,6 @@ from zipfile import BadZipFile
 import pandas as pd
 
 from . import __version__
-from ._genelist import _WEIGHTED_CELL
 from ._io import CACHE_SCHEMA, _PROP_STEM, atomic_write, cache_dir_for, cache_fresh, load_net, \
     load_object, open_text, read_names, safe_names, save_net, save_objects
 from ._parsers import PARSERS
@@ -219,22 +218,11 @@ def _bundled_obo() -> str | None:
 
 
 def _read_bg(path: str) -> list[str]:
-    """Read a background gene list.
-
-    ``gene,weight`` / ``gene;weight`` pairs keep only the id (same markup gene
-    lists accept); bare comma/semicolon lists are split. The pair form is only
-    taken when the id half holds no separator, so an all-numeric comma list such
-    as ``7157,672,675,1234`` stays four genes instead of one.
-    """
+    """Read a background gene list; bare comma/semicolon lists are split."""
     vals = []
     with open_text(path) as fh:
         for line in fh:
-            for tok in line.split():
-                m = _WEIGHTED_CELL.match(tok)
-                if m:
-                    vals.append(m.group(1))
-                else:
-                    vals.extend(t for t in tok.replace(",", " ").replace(";", " ").split() if t)
+            vals.extend(line.replace(",", " ").replace(";", " ").split())
     return vals
 
 
@@ -350,11 +338,7 @@ def cmd_enrich(args) -> int:
     elif obo_path:
         go = GeneOntology.cached(obo_path, obo_cdir)  # term names for the report
 
-    header, sets, weighted = read_genelist(args.genelist, no_header=args.no_header)
-    if weighted:
-        print(f"[qenrich] note: column(s) {', '.join(repr(c) for c in weighted)} hold gene,weight "
-              f"pairs; the weights are ignored, the gene ids are used",
-              file=sys.stderr)
+    header, sets = read_genelist(args.genelist, no_header=args.no_header)
     sets = _select_columns(header, sets, args.columns)
     if args.strip_suffix:
         sets, net = strip_suffix(sets, net)
